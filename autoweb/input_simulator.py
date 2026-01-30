@@ -96,6 +96,7 @@ class VirtualKey(IntEnum):
     VK_DOWN = 0x28
     VK_LWIN = 0x5B  # Left Windows key
     VK_RWIN = 0x5C  # Right Windows key
+    VK_F12 = 0x7B   # F12 key
 
 
 # Structure definitions for SendInput
@@ -348,6 +349,91 @@ class InputSimulator:
         logger.info(f"Random mouse movement to ({x}, {y})")
         return (x, y)
     
+    def safe_click(self) -> Tuple[int, int]:
+        """
+        Perform a SAFE click that won't affect code or content.
+        
+        Safe areas include:
+        - Screen edges (where title bars, taskbar, scrollbars are)
+        - Corners of the screen
+        This prevents accidentally clicking on code, buttons, or content.
+        
+        Returns:
+            Tuple of (x, y) where the safe click was performed
+        """
+        # Define safe click zones (edges and corners only)
+        safe_zones = [
+            # Top edge (title bar area) - most safe
+            (random.randint(100, self.screen_width - 100), random.randint(5, 30)),
+            # Left edge (sidebar area)
+            (random.randint(5, 50), random.randint(100, self.screen_height - 100)),
+            # Right edge (scrollbar area)
+            (random.randint(self.screen_width - 30, self.screen_width - 5), 
+             random.randint(100, self.screen_height - 200)),
+            # Bottom edge (taskbar - but avoid clicking on apps)
+            (random.randint(self.screen_width - 200, self.screen_width - 50), 
+             random.randint(self.screen_height - 45, self.screen_height - 5)),
+        ]
+        
+        # Choose a random safe zone
+        x, y = random.choice(safe_zones)
+        
+        # Move to the safe position
+        self.move_mouse_smooth(x, y, duration=0.2, steps=8)
+        time.sleep(0.1)
+        
+        # Perform the click
+        self.click("left")
+        logger.info(f"Safe click at edge position ({x}, {y})")
+        return (x, y)
+    
+    def scroll(self, direction: str = "down", amount: int = 3) -> bool:
+        """
+        Simulate mouse wheel scrolling.
+        
+        How scrolling works:
+        - SendInput with WHEEL flag sends scroll events
+        - Positive mouseData = scroll up
+        - Negative mouseData = scroll down
+        - Amount is in "clicks" (120 units = 1 wheel click)
+        
+        Args:
+            direction: "up" or "down"
+            amount: Number of wheel clicks (1-5 typical)
+        
+        Returns:
+            True if successful
+        """
+        # WHEEL_DELTA is 120 per click
+        wheel_delta = 120 * amount
+        if direction == "down":
+            wheel_delta = -wheel_delta
+        
+        inp = INPUT()
+        inp.type = InputType.MOUSE
+        inp.union.mi.dx = 0
+        inp.union.mi.dy = 0
+        inp.union.mi.mouseData = wheel_delta
+        inp.union.mi.dwFlags = MouseEventFlags.WHEEL
+        inp.union.mi.time = 0
+        inp.union.mi.dwExtraInfo = None
+        
+        result = self._send_input(inp)
+        logger.info(f"Scrolled {direction} by {amount} clicks")
+        return result > 0
+    
+    def scroll_random(self) -> str:
+        """
+        Perform a random scroll action (up or down).
+        
+        Returns:
+            Direction of scroll ("up" or "down")
+        """
+        direction = random.choice(["up", "down"])
+        amount = random.randint(1, 4)
+        self.scroll(direction, amount)
+        return direction
+    
     def click(
         self, 
         button: str = "left", 
@@ -499,16 +585,52 @@ class InputSimulator:
         """
         logger.info("Executing Alt+Tab")
         
+        # Use SendInput for more reliable Alt+Tab
         # Alt down
-        self.key_down(VirtualKey.VK_ALT)
-        time.sleep(0.05)
+        alt_down = INPUT()
+        alt_down.type = InputType.KEYBOARD
+        alt_down.union.ki.wVk = VirtualKey.VK_ALT
+        alt_down.union.ki.wScan = 0
+        alt_down.union.ki.dwFlags = 0
+        alt_down.union.ki.time = 0
+        alt_down.union.ki.dwExtraInfo = None
         
-        # Tab press and release
-        self.key_press(VirtualKey.VK_TAB)
-        time.sleep(0.1)
+        # Tab down
+        tab_down = INPUT()
+        tab_down.type = InputType.KEYBOARD
+        tab_down.union.ki.wVk = VirtualKey.VK_TAB
+        tab_down.union.ki.wScan = 0
+        tab_down.union.ki.dwFlags = 0
+        tab_down.union.ki.time = 0
+        tab_down.union.ki.dwExtraInfo = None
+        
+        # Tab up
+        tab_up = INPUT()
+        tab_up.type = InputType.KEYBOARD
+        tab_up.union.ki.wVk = VirtualKey.VK_TAB
+        tab_up.union.ki.wScan = 0
+        tab_up.union.ki.dwFlags = KeyEventFlags.KEYUP
+        tab_up.union.ki.time = 0
+        tab_up.union.ki.dwExtraInfo = None
         
         # Alt up
-        self.key_up(VirtualKey.VK_ALT)
+        alt_up = INPUT()
+        alt_up.type = InputType.KEYBOARD
+        alt_up.union.ki.wVk = VirtualKey.VK_ALT
+        alt_up.union.ki.wScan = 0
+        alt_up.union.ki.dwFlags = KeyEventFlags.KEYUP
+        alt_up.union.ki.time = 0
+        alt_up.union.ki.dwExtraInfo = None
+        
+        # Send all events with proper timing
+        self._send_input(alt_down)
+        time.sleep(0.05)
+        self._send_input(tab_down)
+        time.sleep(0.05)
+        self._send_input(tab_up)
+        time.sleep(0.15)  # Give time for Windows to process
+        self._send_input(alt_up)
+        time.sleep(0.1)
         
         return True
     

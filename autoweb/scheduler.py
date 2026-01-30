@@ -55,9 +55,10 @@ class AutomationPhase(Enum):
 class ActionType(Enum):
     """Types of actions that can be performed during active phase."""
     MOUSE_MOVE = auto()
-    MOUSE_CLICK = auto()
+    MOUSE_CLICK = auto()  # Safe click - won't affect content
     APP_SWITCH = auto()
     TAB_SWITCH = auto()
+    SCROLL = auto()       # Scroll action for VS Code and other apps
 
 
 @dataclass
@@ -74,6 +75,7 @@ class SchedulerState:
     current_app: str = ""    # Name of currently active application
     last_action: str = ""    # Description of last action taken
     is_running: bool = False
+    next_action_in: int = 0  # Seconds until next action
 
 
 @dataclass
@@ -95,9 +97,10 @@ class SchedulerConfig:
     idle_max: int = 240             # 4 minutes
     action_interval_min: float = 3.0
     action_interval_max: float = 10.0
-    click_probability: float = 0.3
-    app_switch_probability: float = 0.2
+    click_probability: float = 0.10  # Reduced - safe clicks only
+    app_switch_probability: float = 0.35  # Increased for better app switching
     tab_switch_probability: float = 0.15
+    scroll_probability: float = 0.20  # Scrolling in VS Code and other apps
 
 
 class AutomationScheduler:
@@ -145,11 +148,16 @@ class AutomationScheduler:
         
         # Action weights for random selection
         self._action_weights = {
-            ActionType.MOUSE_MOVE: 0.5,      # Most common action
-            ActionType.MOUSE_CLICK: self.config.click_probability,
+            ActionType.MOUSE_MOVE: 0.4,      # Common action
+            ActionType.MOUSE_CLICK: self.config.click_probability,  # Safe clicks
             ActionType.APP_SWITCH: self.config.app_switch_probability,
             ActionType.TAB_SWITCH: self.config.tab_switch_probability,
+            ActionType.SCROLL: self.config.scroll_probability,  # Scrolling
         }
+        
+        # List of apps where scrolling is enabled
+        self._scroll_apps = ["Visual Studio Code", "Code", "VS Code", "Chrome", 
+                            "Firefox", "Edge", "Notepad", "Word", "Excel"]
         
         logger.info("AutomationScheduler initialized")
     
@@ -163,7 +171,8 @@ class AutomationScheduler:
                 cycle_count=self._state.cycle_count,
                 current_app=self._state.current_app,
                 last_action=self._state.last_action,
-                is_running=self._state.is_running
+                is_running=self._state.is_running,
+                next_action_in=self._state.next_action_in
             )
     
     def _update_state(self, **kwargs) -> None:
@@ -207,30 +216,60 @@ class AutomationScheduler:
             Description of the action taken
         """
         try:
+            # Get current window info for context-aware actions
+            current_window = self.window_manager.get_foreground_window()
+            current_app = current_window.title if current_window else ""
+            is_code_editor = any(app in current_app for app in ["Visual Studio Code", "Code", "VS Code"])
+            
             if action == ActionType.MOUSE_MOVE:
                 x, y = self.input_simulator.move_mouse_random()
                 return f"Mouse moved to ({x}, {y})"
             
             elif action == ActionType.MOUSE_CLICK:
-                # Move to random position first, then click
-                x, y = self.input_simulator.move_mouse_random()
-                time.sleep(0.2)
-                # Use left click on safe area
-                self.input_simulator.click("left")
-                return f"Clicked at ({x}, {y})"
+                # SAFE CLICK: Only click on safe areas (title bar, edges)
+                # This prevents accidental clicks on code or content
+                x, y = self.input_simulator.safe_click()
+                return f"Safe click at ({x}, {y}) - edges only"
             
             elif action == ActionType.APP_SWITCH:
+                # Use direct window switching instead of Alt+Tab for reliability
+                windows = self.window_manager.get_all_windows()
+                if len(windows) > 1:
+                    # Find a different window to switch to
+                    import random
+                    other_windows = [w for w in windows if w.hwnd != (current_window.hwnd if current_window else 0)]
+                    if other_windows:
+                        target = random.choice(other_windows)
+                        self.window_manager.switch_to_window(target.hwnd)
+                        time.sleep(0.3)
+                        # Update current app
+                        window = self.window_manager.get_foreground_window()
+                        app_name = window.title if window else target.title
+                        self._update_state(current_app=app_name)
+                        return f"Switched to: {app_name[:30]}..."
+                
+                # Fallback to Alt+Tab
                 self.input_simulator.shortcut_alt_tab()
                 time.sleep(0.3)
-                # Update current app
                 window = self.window_manager.get_foreground_window()
                 app_name = window.title if window else "Unknown"
                 self._update_state(current_app=app_name)
-                return f"Switched to: {app_name[:30]}..."
+                return f"Alt+Tab to: {app_name[:30]}..."
             
             elif action == ActionType.TAB_SWITCH:
                 self.input_simulator.shortcut_ctrl_tab()
                 return "Switched tab (Ctrl+Tab)"
+            
+            elif action == ActionType.SCROLL:
+                # Scroll in the current application
+                is_scrollable = any(app in current_app for app in self._scroll_apps)
+                if is_scrollable:
+                    direction = self.input_simulator.scroll_random()
+                    return f"Scrolled {direction} in {current_app[:20]}..."
+                else:
+                    # Fall back to mouse move if not a scrollable app
+                    x, y = self.input_simulator.move_mouse_random()
+                    return f"Mouse moved to ({x}, {y})"
             
             return "Unknown action"
             
@@ -271,24 +310,41 @@ class AutomationScheduler:
             
             self._update_state(time_remaining=remaining)
             
-            # Select and execute random action
-            action = self._select_random_action()
-            action_desc = self._execute_action(action)
-            self._update_state(last_action=action_desc)
-            
-            logger.info(f"Action: {action_desc}")
-            
-            # Wait random interval before next action
+            # Calculate next action interval
             interval = random.uniform(
                 self.config.action_interval_min,
                 self.config.action_interval_max
             )
             
-            # Use small sleep increments to allow responsive stopping
-            for _ in range(int(interval * 10)):
-                if self._stop_event.is_set():
-                    return
+            # Update next action countdown
+            action_start = time.time()
+            
+            # Wait with countdown updates
+            while not self._stop_event.is_set():
+                wait_elapsed = time.time() - action_start
+                if wait_elapsed >= interval:
+                    break
+                    
+                # Update next action timer
+                next_action_in = int(interval - wait_elapsed)
+                self._update_state(next_action_in=next_action_in)
                 time.sleep(0.1)
+            
+            if self._stop_event.is_set():
+                return
+            
+            # Select and execute random action
+            action = self._select_random_action()
+            self._update_state(next_action_in=0)  # Action happening now
+            action_desc = self._execute_action(action)
+            self._update_state(last_action=action_desc)
+            
+            # Update phase time remaining
+            elapsed = time.time() - start_time
+            remaining = int(duration - elapsed)
+            self._update_state(time_remaining=remaining)
+            
+            logger.info(f"Action: {action_desc}")
         
         logger.info("Active phase completed")
     
