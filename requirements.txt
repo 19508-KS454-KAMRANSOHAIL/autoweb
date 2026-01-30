@@ -1,0 +1,24 @@
+# AutoWeb Requirements
+# ====================
+# 
+# This application uses only Python standard library modules.
+# No external dependencies are required.
+#
+# Standard Library Modules Used:
+# - tkinter (GUI framework, included with Python on Windows)
+# - ctypes (Windows API access, included with Python)
+# - threading (multi-threading support)
+# - time (timing functions)
+# - random (randomization)
+# - logging (logging framework)
+# - dataclasses (data structures)
+# - enum (enumerations)
+# - typing (type hints)
+# - datetime (date/time handling)
+# - sys (system functions)
+#
+# Note: Make sure you have Python 3.8 or higher installed.
+# On Windows, Python typically includes tkinter by default.
+# If tkinter is missing, reinstall Python with the "tcl/tk and IDLE" option.
+
+# No pip packages required!

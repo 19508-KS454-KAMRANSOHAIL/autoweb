@@ -1,0 +1,55 @@
+2026-01-30 23:08:47,277 - __main__ - INFO - Set per-monitor DPI awareness
+2026-01-30 23:08:47,277 - __main__ - INFO - Starting AutoWeb application
+2026-01-30 23:08:47,541 - autoweb.window_manager - INFO - WindowManager initialized successfully
+2026-01-30 23:08:47,541 - autoweb.input_simulator - INFO - InputSimulator initialized. Screen: 2560x1440
+2026-01-30 23:08:47,542 - autoweb.scheduler - INFO - AutomationScheduler initialized
+2026-01-30 23:08:48,315 - autoweb.ui - INFO - AutoWebApp initialized
+2026-01-30 23:09:59,364 - __main__ - INFO - Set per-monitor DPI awareness
+2026-01-30 23:09:59,365 - __main__ - INFO - Starting AutoWeb application
+2026-01-30 23:09:59,491 - autoweb.window_manager - INFO - WindowManager initialized successfully
+2026-01-30 23:09:59,494 - autoweb.input_simulator - INFO - InputSimulator initialized. Screen: 2560x1440
+2026-01-30 23:09:59,494 - autoweb.scheduler - INFO - AutomationScheduler initialized
+2026-01-30 23:09:59,958 - autoweb.ui - INFO - AutoWebApp initialized
+2026-01-30 23:10:05,159 - autoweb.scheduler - INFO - Automation loop started
+2026-01-30 23:10:05,159 - autoweb.scheduler - INFO - Scheduler started
+2026-01-30 23:10:05,162 - autoweb.scheduler - INFO - === Starting cycle 1 ===
+2026-01-30 23:10:05,162 - autoweb.scheduler - INFO - Starting active phase for 300 seconds
+2026-01-30 23:10:05,481 - autoweb.input_simulator - INFO - Random mouse movement to (938, 94)
+2026-01-30 23:10:05,481 - autoweb.scheduler - INFO - Action: Mouse moved to (938, 94)
+2026-01-30 23:10:08,799 - autoweb.input_simulator - INFO - Random mouse movement to (423, 569)
+2026-01-30 23:10:09,018 - autoweb.input_simulator - INFO - Left click at (422, 568)
+2026-01-30 23:10:09,023 - autoweb.scheduler - INFO - Action: Clicked at (423, 569)
+2026-01-30 23:10:16,270 - autoweb.input_simulator - INFO - Random mouse movement to (2235, 195)
+2026-01-30 23:10:16,474 - autoweb.input_simulator - INFO - Left click at (2234, 194)
+2026-01-30 23:10:16,475 - autoweb.scheduler - INFO - Action: Clicked at (2235, 195)
+2026-01-30 23:10:23,135 - autoweb.input_simulator - INFO - Executing Ctrl+Tab
+2026-01-30 23:10:23,241 - autoweb.scheduler - INFO - Action: Switched tab (Ctrl+Tab)
+2026-01-30 23:10:31,439 - autoweb.input_simulator - INFO - Random mouse movement to (1810, 1053)
+2026-01-30 23:10:31,654 - autoweb.input_simulator - INFO - Left click at (1809, 1052)
+2026-01-30 23:10:31,655 - autoweb.scheduler - INFO - Action: Clicked at (1810, 1053)
+2026-01-30 23:10:38,138 - autoweb.input_simulator - INFO - Random mouse movement to (606, 787)
+2026-01-30 23:10:38,340 - autoweb.input_simulator - INFO - Left click at (605, 786)
+2026-01-30 23:10:38,340 - autoweb.scheduler - INFO - Action: Clicked at (606, 787)
+2026-01-30 23:10:43,496 - autoweb.input_simulator - INFO - Random mouse movement to (2051, 570)
+2026-01-30 23:10:43,496 - autoweb.scheduler - INFO - Action: Mouse moved to (2051, 570)
+2026-01-30 23:10:51,481 - autoweb.input_simulator - INFO - Random mouse movement to (2276, 208)
+2026-01-30 23:10:51,482 - autoweb.scheduler - INFO - Action: Mouse moved to (2276, 208)
+2026-01-30 23:10:56,642 - autoweb.input_simulator - INFO - Random mouse movement to (182, 897)
+2026-01-30 23:10:56,643 - autoweb.scheduler - INFO - Action: Mouse moved to (182, 897)
+2026-01-30 23:11:03,044 - autoweb.input_simulator - INFO - Random mouse movement to (2082, 425)
+2026-01-30 23:11:03,044 - autoweb.scheduler - INFO - Action: Mouse moved to (2082, 425)
+2026-01-30 23:11:10,664 - autoweb.input_simulator - INFO - Random mouse movement to (1456, 1375)
+2026-01-30 23:11:10,874 - autoweb.input_simulator - INFO - Left click at (1455, 1374)
+2026-01-30 23:11:10,875 - autoweb.scheduler - INFO - Action: Clicked at (1456, 1375)
+2026-01-30 23:11:14,318 - autoweb.input_simulator - INFO - Random mouse movement to (1068, 811)
+2026-01-30 23:11:14,520 - autoweb.input_simulator - INFO - Left click at (1067, 810)
+2026-01-30 23:11:14,521 - autoweb.scheduler - INFO - Action: Clicked at (1068, 811)
+2026-01-30 23:11:20,374 - autoweb.input_simulator - INFO - Random mouse movement to (2119, 1378)
+2026-01-30 23:11:20,375 - autoweb.scheduler - INFO - Action: Mouse moved to (2119, 1378)
+2026-01-30 23:11:28,465 - autoweb.input_simulator - INFO - Random mouse movement to (934, 1329)
+2026-01-30 23:11:28,465 - autoweb.scheduler - INFO - Action: Mouse moved to (934, 1329)
+2026-01-30 23:11:33,860 - autoweb.scheduler - INFO - Stopping scheduler...
+2026-01-30 23:11:35,866 - autoweb.scheduler - WARNING - Thread did not stop gracefully
+2026-01-30 23:11:35,866 - autoweb.scheduler - INFO - Scheduler stopped
+2026-01-30 23:11:35,869 - autoweb.scheduler - INFO - Automation loop ended
+2026-01-30 23:11:38,920 - __main__ - INFO - AutoWeb application closed
