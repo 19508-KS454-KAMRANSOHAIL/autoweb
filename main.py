@@ -32,8 +32,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('autoweb.log', encoding='utf-8')
+        logging.StreamHandler(sys.stdout)  # Only console output
     ]
 )
 logger = logging.getLogger(__name__)

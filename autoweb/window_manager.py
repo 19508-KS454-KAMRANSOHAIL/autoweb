@@ -140,6 +140,11 @@ class WindowManager:
             if ex_style & 0x00000080:  # WS_EX_TOOLWINDOW
                 return True
             
+            # Check if window is minimized (IsIconic returns non-zero if minimized)
+            is_minimized = self.user32.IsIconic(hwnd)
+            if is_minimized:
+                return True  # Skip minimized windows
+            
             # Create WindowInfo and add to list
             window_info = WindowInfo(
                 hwnd=hwnd,
@@ -193,9 +198,7 @@ class WindowManager:
         How SetForegroundWindow works:
         - Brings the specified window to the front of the Z-order
         - Activates the window and gives it keyboard focus
-        - May fail if called from a background process (Windows security)
-        
-        We also use ShowWindow and SetFocus for better reliability.
+        - Does NOT change window state (no restore/minimize)
         
         Args:
             hwnd: The handle of the window to switch to
@@ -204,10 +207,12 @@ class WindowManager:
             True if successful, False otherwise
         """
         try:
-            # SW_RESTORE = 9 - Restores window if minimized
-            self.user32.ShowWindow(hwnd, 9)
+            # Check if window is minimized - if so, skip it (don't restore)
+            if self.user32.IsIconic(hwnd):
+                logger.info(f"Window {hwnd} is minimized - skipping (no restore)")
+                return False
             
-            # SetForegroundWindow brings the window to the front
+            # SetForegroundWindow brings the window to the front WITHOUT changing its state
             result = self.user32.SetForegroundWindow(hwnd)
             
             if result:
@@ -227,7 +232,7 @@ class WindowManager:
                     foreground_thread, current_thread, True
                 )
                 
-                # Now try to set foreground window
+                # Now try to set foreground window (no restore/minimize)
                 self.user32.SetForegroundWindow(hwnd)
                 self.user32.SetFocus(hwnd)
                 
@@ -289,6 +294,32 @@ class WindowManager:
             Number of detected windows
         """
         return len(self.get_all_windows())
+    
+    def is_window_minimized(self, hwnd: int) -> bool:
+        """
+        Check if a window is minimized.
+        
+        Args:
+            hwnd: The window handle to check
+        
+        Returns:
+            True if the window is minimized, False otherwise
+        """
+        return bool(self.user32.IsIconic(hwnd))
+    
+    def get_visible_windows(self) -> List[WindowInfo]:
+        """
+        Get only visible (non-minimized) windows.
+        
+        This method returns windows that are:
+        - Visible on screen
+        - Not minimized
+        - Main application windows (not tool windows)
+        
+        Returns:
+            List of WindowInfo for visible windows only
+        """
+        return self.get_all_windows()  # Already filters minimized in get_all_windows
 
 
 # Example usage and testing

@@ -16,14 +16,35 @@ The application simulates user input at the OS level. Please ensure you have pro
 
 ## 📋 Features
 
+### Core Features
+
 - **Window Detection**: Automatically detects all open application windows
-- **Application Switching**: Programmatically switches between open applications
-- **Tab Switching**: Uses keyboard shortcuts (Ctrl+Tab) to switch tabs
-- **Mouse Simulation**: Random mouse movements and clicks
+- **Application Switching**: Programmatically switches between open applications (non-minimized only)
+- **Tab Switching**: Uses keyboard shortcuts (Ctrl+Tab) to cycle through tabs in supported apps
+- **Mouse Simulation**: Random mouse movements and safe clicks (edges only)
 - **Keyboard Simulation**: OS-level keyboard input
 - **Automation Cycles**: Configurable active/idle phases with randomized timing
 - **User Consent**: Requires explicit user agreement before starting
 - **Activity Logging**: Real-time log of all automation actions
+
+### Idle Detection & State Management
+
+- **Instant Pause**: Automation pauses immediately on any mouse movement, click, or keyboard input
+- **Smart Resume**: Waits for 2 minutes (120 seconds) of complete user inactivity before resuming
+- **Idle Timer Reset**: Timer resets immediately on any user interaction
+- **No Interruption**: No switching or clicking happens during user activity
+
+### Runtime Management
+
+- **Configurable Runtime**: Set total runtime duration (default: 5 minutes)
+- **Auto-Close**: Application automatically closes when runtime expires
+- **Visual Countdown**: Real-time display of remaining runtime
+
+### Window Filtering
+
+- **Visible Windows Only**: Switches only between currently active and visible applications
+- **Minimized Ignored**: Minimized applications are completely ignored
+- **Tab Cycling**: For apps like Chrome and VS Code, also cycles through their tabs
 
 ---
 
@@ -38,10 +59,11 @@ autoweb/
 ├── requirements.txt     # Dependencies (none - stdlib only!)
 ├── README.md            # This file
 └── autoweb/
-    ├── __init__.py      # Package initialization
+    ├── __init__.py         # Package initialization
     ├── window_manager.py   # Window detection and switching
     ├── input_simulator.py  # Mouse and keyboard simulation
     ├── scheduler.py        # Automation cycle management
+    ├── idle_detector.py    # User activity detection
     └── ui.py               # Graphical user interface
 ```
 
@@ -51,8 +73,9 @@ autoweb/
 | -------------------- | ---------------------------------------------------------------------------------------------------- |
 | `window_manager.py`  | Uses Windows API (EnumWindows, SetForegroundWindow) to detect and switch between application windows |
 | `input_simulator.py` | Uses Windows SendInput API to simulate mouse movements, clicks, and keyboard input                   |
-| `scheduler.py`       | Manages automation timing with active (5 min) and idle (2-4 min random) phases                       |
-| `ui.py`              | Tkinter-based GUI with start/stop controls and status display                                        |
+| `scheduler.py`       | Manages automation timing with active/idle phases and user activity integration                      |
+| `idle_detector.py`   | Uses Windows low-level hooks to detect mouse and keyboard activity system-wide                       |
+| `ui.py`              | Tkinter-based GUI with start/stop controls, status display, and runtime configuration                |
 
 ---
 
