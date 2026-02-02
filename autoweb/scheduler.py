@@ -591,13 +591,23 @@ class AutomationScheduler:
         self.idle_detector.suppress_activity()
         
         try:
+            logger.debug("Starting app switch...")
             current_window = self.window_manager.get_foreground_window()
             current_app = current_window.title if current_window else ""
+            logger.debug(f"Current app: {current_app[:30]}")
             
             # ROUND-ROBIN: Cycle through all apps so each gets a turn
-            next_app = self._get_next_app_round_robin()
-            
-            if next_app:
+            # Try multiple times in case some windows are invalid
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                next_app = self._get_next_app_round_robin()
+                
+                if not next_app:
+                    logger.debug("No next app found")
+                    return "No other visible windows"
+                
+                logger.debug(f"Attempt {attempt+1}: Trying to switch to {next_app.title[:30]}")
+                
                 # Check if it's a Chrome window - maybe switch to different Chrome window
                 if self._is_chrome(current_app) and len(self._chrome_windows) > 1:
                     # 50% chance to switch Chrome windows instead of apps
@@ -621,8 +631,12 @@ class AutomationScheduler:
                     app_num = self._app_cycle_index + 1
                     total_apps = len(self._known_windows)
                     return f"🔄 APP SWITCH ({int(self.config.app_switch_interval)}s): App {app_num}/{total_apps}: {app_name[:25]}..."
+                else:
+                    logger.debug(f"Failed to switch to {next_app.title[:30]}, trying next...")
+                    # Force refresh window list for next attempt
+                    self._last_window_refresh = 0
             
-            return "No other visible windows"
+            return "Could not switch - all windows failed"
             
         except Exception as e:
             logger.error(f"Error in app switch: {e}")

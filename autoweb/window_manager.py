@@ -207,9 +207,19 @@ class WindowManager:
             True if successful, False otherwise
         """
         try:
+            # Check if window still exists
+            if not self.user32.IsWindow(hwnd):
+                logger.debug(f"Window {hwnd} no longer exists")
+                return False
+            
             # Check if window is minimized - if so, skip it (don't restore)
             if self.user32.IsIconic(hwnd):
-                logger.info(f"Window {hwnd} is minimized - skipping (no restore)")
+                logger.debug(f"Window {hwnd} is minimized - skipping (no restore)")
+                return False
+            
+            # Check if window is visible
+            if not self.user32.IsWindowVisible(hwnd):
+                logger.debug(f"Window {hwnd} is not visible - skipping")
                 return False
             
             # SetForegroundWindow brings the window to the front WITHOUT changing its state
@@ -222,6 +232,9 @@ class WindowManager:
                 # Alternative method using AttachThreadInput
                 # This attaches our thread's input to the foreground thread
                 foreground_hwnd = self.user32.GetForegroundWindow()
+                if not foreground_hwnd:
+                    return False
+                    
                 foreground_thread = self.user32.GetWindowThreadProcessId(
                     foreground_hwnd, None
                 )
