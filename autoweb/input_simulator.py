@@ -354,25 +354,29 @@ class InputSimulator:
         Perform a SAFE click that won't affect code or content.
         
         Safe areas include:
-        - Screen edges (where title bars, taskbar, scrollbars are)
-        - Corners of the screen
-        This prevents accidentally clicking on code, buttons, or content.
+        - Top edge (title bar area) - MOST SAFE
+        - Left edge (sidebar area)
+        - Right edge (scrollbar area)
+        
+        AVOIDS:
+        - Bottom right corner (calendar/system tray)
+        - Bottom left corner (Start button)
+        - Entire taskbar area
         
         Returns:
             Tuple of (x, y) where the safe click was performed
         """
-        # Define safe click zones (edges and corners only)
+        # Define safe click zones - AVOID TASKBAR ENTIRELY
         safe_zones = [
-            # Top edge (title bar area) - most safe
-            (random.randint(100, self.screen_width - 100), random.randint(5, 30)),
-            # Left edge (sidebar area)
-            (random.randint(5, 50), random.randint(100, self.screen_height - 100)),
-            # Right edge (scrollbar area)
-            (random.randint(self.screen_width - 30, self.screen_width - 5), 
-             random.randint(100, self.screen_height - 200)),
-            # Bottom edge (taskbar - but avoid clicking on apps)
-            (random.randint(self.screen_width - 200, self.screen_width - 50), 
-             random.randint(self.screen_height - 45, self.screen_height - 5)),
+            # Top edge (title bar area) - MOST SAFE - multiple options
+            (random.randint(150, self.screen_width - 150), random.randint(8, 35)),
+            (random.randint(200, self.screen_width - 200), random.randint(10, 30)),
+            (random.randint(100, self.screen_width - 100), random.randint(5, 25)),
+            # Left edge (sidebar area) - safe, away from taskbar
+            (random.randint(5, 40), random.randint(150, self.screen_height - 150)),
+            # Right edge (scrollbar area) - safe, well above taskbar
+            (random.randint(self.screen_width - 25, self.screen_width - 5), 
+             random.randint(150, self.screen_height - 200)),
         ]
         
         # Choose a random safe zone
@@ -433,6 +437,44 @@ class InputSimulator:
         amount = random.randint(1, 4)
         self.scroll(direction, amount)
         return direction
+    
+    def scroll_sequence(self) -> str:
+        """
+        Perform a natural scrolling sequence - scroll down then up or vice versa.
+        
+        This simulates a user reading/browsing a page by scrolling
+        in one direction, then scrolling back.
+        
+        Returns:
+            Description of scroll sequence
+        """
+        import time as t
+        
+        # Choose pattern: mostly scroll down first (reading), sometimes up first
+        start_down = random.random() < 0.7
+        
+        if start_down:
+            # Scroll down first (like reading)
+            down_amount = random.randint(2, 5)
+            self.scroll("down", down_amount)
+            t.sleep(random.uniform(0.3, 0.8))
+            
+            # Then scroll up a bit
+            up_amount = random.randint(1, 3)
+            self.scroll("up", up_amount)
+            
+            return f"down {down_amount}, up {up_amount}"
+        else:
+            # Scroll up first
+            up_amount = random.randint(2, 4)
+            self.scroll("up", up_amount)
+            t.sleep(random.uniform(0.3, 0.8))
+            
+            # Then scroll down
+            down_amount = random.randint(1, 3)
+            self.scroll("down", down_amount)
+            
+            return f"up {up_amount}, down {down_amount}"
     
     def click(
         self, 

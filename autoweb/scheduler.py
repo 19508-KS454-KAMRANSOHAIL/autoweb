@@ -94,10 +94,10 @@ class SchedulerConfig:
         active_duration: Duration of active phase in seconds
         idle_min: Minimum idle phase duration in seconds
         idle_max: Maximum idle phase duration in seconds
-        action_interval_min: Minimum seconds between actions
+        action_interval_min: Minimum seconds between actions (scroll, tab, mouse)
         action_interval_max: Maximum seconds between actions
+        app_switch_interval: Seconds between app switches (separate from actions)
         click_probability: Probability of performing a click (0-1)
-        app_switch_probability: Probability of switching apps (0-1)
         click_phase_max: Maximum random delay before click (0 to this value)
         total_runtime: Total runtime before auto-close in seconds (default: 5 min)
         user_idle_timeout: Seconds of inactivity before resuming (default: 120s)
@@ -105,15 +105,15 @@ class SchedulerConfig:
     active_duration: int = 300      # 5 minutes
     idle_min: int = 120             # 2 minutes
     idle_max: int = 240             # 4 minutes
-    action_interval_min: float = 3.0
-    action_interval_max: float = 10.0
-    click_probability: float = 0.10  # Reduced - safe clicks only
-    app_switch_probability: float = 0.35  # Increased for better app switching
-    tab_switch_probability: float = 0.15
-    scroll_probability: float = 0.20  # Scrolling in VS Code and other apps
-    click_phase_max: float = 10.0   # Random delay 0 to this value before clicks
-    total_runtime: int = 300        # 5 minutes default
-    user_idle_timeout: float = 30.0  # 30 seconds of inactivity before resuming
+    action_interval_min: float = 3.0   # Actions every 3-8 seconds
+    action_interval_max: float = 8.0
+    app_switch_interval: float = 30.0  # Switch apps every 30 seconds by default
+    click_probability: float = 0.10    # Reduced - safe clicks only
+    tab_switch_probability: float = 0.20
+    scroll_probability: float = 0.25   # Scrolling in VS Code and other apps
+    click_phase_max: float = 10.0      # Random delay 0 to this value before clicks
+    total_runtime: int = 300           # 5 minutes default
+    user_idle_timeout: float = 30.0    # 30 seconds of inactivity before resuming
 
 
 class AutomationScheduler:
@@ -177,12 +177,11 @@ class AutomationScheduler:
         self._paused_time: float = 0.0  # Accumulated pause time
         self._pause_start: Optional[float] = None
         
-        # Action weights for random selection
+        # Action weights for random selection (NO app switch - it's on separate timer)
         self._action_weights = {
-            ActionType.MOUSE_MOVE: 0.25,       # Reduced - focus on switching
+            ActionType.MOUSE_MOVE: 0.30,       
             ActionType.MOUSE_CLICK: self.config.click_probability,  # Safe clicks
-            ActionType.APP_SWITCH: 0.30,       # Higher - cycle through apps
-            ActionType.TAB_SWITCH: 0.25,       # Switch tabs in Chrome/VS Code
+            ActionType.TAB_SWITCH: self.config.tab_switch_probability,  # Switch tabs
             ActionType.SCROLL: self.config.scroll_probability,  # Scrolling
         }
         
@@ -202,6 +201,9 @@ class AutomationScheduler:
         # Chrome window tracking
         self._chrome_windows = []
         self._chrome_window_index = 0
+        
+        # App switch timing (separate from action interval)
+        self._last_app_switch_time = 0.0
         
         logger.info("AutomationScheduler initialized")
     
@@ -282,6 +284,10 @@ class AutomationScheduler:
         if self._pause_start is not None:
             self._paused_time += time.time() - self._pause_start
             self._pause_start = None
+        
+        # IMPORTANT: Reset app switch timer on resume
+        # This ensures full switch interval from now, not including pause time
+        self._last_app_switch_time = time.time()
         
         # Clear pause, set resume
         self._pause_event.clear()
@@ -524,55 +530,14 @@ class AutomationScheduler:
                 x, y = self.input_simulator.safe_click()
                 return f"Safe click at ({x}, {y}) after {click_delay:.1f}s delay"
             
-            elif action == ActionType.APP_SWITCH:
-                # ROUND-ROBIN: Cycle through all apps so each gets a turn
-                next_app = self._get_next_app_round_robin()
-                
-                if next_app:
-                    # Check if it's a Chrome window - maybe switch to different Chrome window
-                    if self._is_chrome(current_app) and len(self._chrome_windows) > 1:
-                        # 50% chance to switch Chrome windows instead of apps
-                        if random.random() < 0.5:
-                            result = self._switch_chrome_window()
-                            if result:
-                                time.sleep(0.3)
-                                window = self.window_manager.get_foreground_window()
-                                if window:
-                                    self._update_state(current_app=window.title)
-                                return result
-                    
-                    # Switch to next app in round-robin
-                    if self.window_manager.switch_to_window(next_app.hwnd):
-                        time.sleep(0.3)
-                        window = self.window_manager.get_foreground_window()
-                        app_name = window.title if window else next_app.title
-                        self._update_state(current_app=app_name)
-                        
-                        # Log which app we switched to
-                        app_num = self._app_cycle_index + 1
-                        total_apps = len(self._known_windows)
-                        return f"App {app_num}/{total_apps}: {app_name[:25]}..."
-                
-                return "No other visible windows"
-            
             elif action == ActionType.TAB_SWITCH:
                 # Handle tab switching for Chrome and VS Code
+                # NOTE: Only switch TABS within the SAME app, never switch apps/windows
                 is_chrome = self._is_chrome(current_app)
                 is_vscode = self._is_vscode(current_app)
                 
                 if is_chrome:
-                    # For Chrome: switch tabs OR switch Chrome windows
-                    if len(self._chrome_windows) > 1 and random.random() < 0.3:
-                        # 30% chance to switch Chrome windows
-                        result = self._switch_chrome_window()
-                        if result:
-                            time.sleep(0.3)
-                            window = self.window_manager.get_foreground_window()
-                            if window:
-                                self._update_state(current_app=window.title)
-                            return result
-                    
-                    # Switch Chrome tab
+                    # Switch Chrome tabs ONLY (not windows)
                     return self._switch_tab_in_app("Chrome")
                 
                 elif is_vscode:
@@ -584,22 +549,21 @@ class AutomationScheduler:
                     return self._switch_tab_in_app(current_app[:20])
                 
                 else:
-                    # Fall back to app switch for apps without tabs
-                    next_app = self._get_next_app_round_robin()
-                    if next_app and self.window_manager.switch_to_window(next_app.hwnd):
-                        time.sleep(0.3)
-                        window = self.window_manager.get_foreground_window()
-                        app_name = window.title if window else next_app.title
-                        self._update_state(current_app=app_name)
-                        return f"Switched to: {app_name[:30]}..."
-                    return "No tabs - no other windows"
+                    # No tabs - just do a scroll or mouse move instead
+                    if any(app in current_app for app in self._scroll_apps):
+                        scroll_desc = self.input_simulator.scroll_sequence()
+                        return f"Scrolled {scroll_desc} in {current_app[:20]}..."
+                    else:
+                        x, y = self.input_simulator.move_mouse_random()
+                        return f"Mouse moved to ({x}, {y})"
             
             elif action == ActionType.SCROLL:
-                # Scroll in the current application
+                # Scroll in the current application (both up and down)
                 is_scrollable = any(app in current_app for app in self._scroll_apps)
                 if is_scrollable:
-                    direction = self.input_simulator.scroll_random()
-                    return f"Scrolled {direction} in {current_app[:20]}..."
+                    # Use scroll sequence for natural up/down scrolling
+                    scroll_desc = self.input_simulator.scroll_sequence()
+                    return f"Scrolled {scroll_desc} in {current_app[:20]}..."
                 else:
                     # Fall back to mouse move if not a scrollable app
                     x, y = self.input_simulator.move_mouse_random()
@@ -612,6 +576,58 @@ class AutomationScheduler:
             return f"Error: {str(e)}"
         finally:
             # Always restore activity detection
+            self.idle_detector.restore_activity()
+    
+    def _execute_app_switch(self) -> str:
+        """
+        Execute app switch action (on separate timer from other actions).
+        
+        Returns:
+            Description of the action taken
+        """
+        if self._pause_event.is_set():
+            return "App switch skipped - user active"
+        
+        self.idle_detector.suppress_activity()
+        
+        try:
+            current_window = self.window_manager.get_foreground_window()
+            current_app = current_window.title if current_window else ""
+            
+            # ROUND-ROBIN: Cycle through all apps so each gets a turn
+            next_app = self._get_next_app_round_robin()
+            
+            if next_app:
+                # Check if it's a Chrome window - maybe switch to different Chrome window
+                if self._is_chrome(current_app) and len(self._chrome_windows) > 1:
+                    # 50% chance to switch Chrome windows instead of apps
+                    if random.random() < 0.5:
+                        result = self._switch_chrome_window()
+                        if result:
+                            time.sleep(0.3)
+                            window = self.window_manager.get_foreground_window()
+                            if window:
+                                self._update_state(current_app=window.title)
+                            return result
+                
+                # Switch to next app in round-robin
+                if self.window_manager.switch_to_window(next_app.hwnd):
+                    time.sleep(0.3)
+                    window = self.window_manager.get_foreground_window()
+                    app_name = window.title if window else next_app.title
+                    self._update_state(current_app=app_name)
+                    
+                    # Log which app we switched to
+                    app_num = self._app_cycle_index + 1
+                    total_apps = len(self._known_windows)
+                    return f"🔄 APP SWITCH ({int(self.config.app_switch_interval)}s): App {app_num}/{total_apps}: {app_name[:25]}..."
+            
+            return "No other visible windows"
+            
+        except Exception as e:
+            logger.error(f"Error in app switch: {e}")
+            return f"Error: {str(e)}"
+        finally:
             self.idle_detector.restore_activity()
     
     def _active_phase(self) -> None:
@@ -694,13 +710,28 @@ class AutomationScheduler:
             if self._stop_event.is_set():
                 return
             
-            # Select and execute random action (only if not paused)
+            # Check if it's time to switch apps (separate timer)
+            time_since_app_switch = time.time() - self._last_app_switch_time
+            should_switch_app = time_since_app_switch >= self.config.app_switch_interval
+            time_until_switch = int(self.config.app_switch_interval - time_since_app_switch)
+            
+            # Execute action (only if not paused)
             if not self._pause_event.is_set():
-                action = self._select_random_action()
-                self._update_state(next_action_in=0)  # Action happening now
-                action_desc = self._execute_action(action)
-                self._update_state(last_action=action_desc)
-                logger.info(f"Action: {action_desc}")
+                if should_switch_app:
+                    # Time to switch apps!
+                    logger.info(f"APP SWITCH TRIGGERED: {time_since_app_switch:.1f}s elapsed (interval: {self.config.app_switch_interval}s)")
+                    self._update_state(next_action_in=0)
+                    action_desc = self._execute_app_switch()
+                    self._last_app_switch_time = time.time()
+                    self._update_state(last_action=action_desc)
+                    logger.info(f"Action: {action_desc}")
+                else:
+                    # Regular action (scroll, tab switch, mouse move, click)
+                    action = self._select_random_action()
+                    self._update_state(next_action_in=0)
+                    action_desc = self._execute_action(action)
+                    self._update_state(last_action=action_desc)
+                    logger.info(f"Action: {action_desc}")
             
             # Update phase time remaining
             elapsed = time.time() - start_time
@@ -846,6 +877,7 @@ class AutomationScheduler:
         self._start_time = time.time()
         self._paused_time = 0.0
         self._pause_start = None
+        self._last_app_switch_time = time.time()  # Initialize app switch timer
         
         # Update state
         self._update_state(

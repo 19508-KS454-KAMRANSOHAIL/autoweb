@@ -993,15 +993,21 @@ class AutoWebApp:
             return  # User clicked Back
         
         # User confirmed - start automation
-        self._log_message(f"Settings: Switch {switch_interval}s, Click 0-{click_phase_max}s, Runtime {int(runtime)}min")
+        self._log_message(f"Settings: App Switch {switch_interval}s, Click 0-{click_phase_max}s, Runtime {int(runtime)}min")
         
         # Register hotkey (Ctrl+Shift+Q to stop)
         self._register_hotkey()
         
         # Apply settings to scheduler
         total_runtime = int(runtime * 60)  # Convert minutes to seconds
-        self.scheduler.config.action_interval_min = switch_interval
-        self.scheduler.config.action_interval_max = switch_interval
+        
+        # App switch interval is the user's setting (e.g., 300 seconds)
+        self.scheduler.config.app_switch_interval = switch_interval
+        
+        # Action interval is fast (3-8 seconds) for scroll, tab switch, mouse move
+        self.scheduler.config.action_interval_min = 3.0
+        self.scheduler.config.action_interval_max = 8.0
+        
         self.scheduler.config.click_phase_max = click_phase_max
         self.scheduler.config.active_duration = total_runtime
         self.scheduler.config.idle_min = 0
@@ -1015,7 +1021,7 @@ class AutoWebApp:
         # Start automation
         if self.scheduler.start():
             self._log_message("Automation started")
-            self._log_message("PAUSES when you move mouse/type")
+            self._log_message(f"Apps switch every {int(switch_interval)} seconds")
             self._log_message("PAUSES on clicks/keyboard only")
             
             # Make window INVISIBLE
