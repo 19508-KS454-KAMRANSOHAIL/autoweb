@@ -52,6 +52,29 @@ GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
 LWA_ALPHA = 0x00000002
 
+# Windows display affinity (screen capture blocking)
+WDA_NONE = 0x00000000
+WDA_MONITOR = 0x00000001
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def _apply_capture_protection(tk_window: tk.Misc, label: str = "window") -> None:
+    """Attempt to block screen capture for the given window."""
+    try:
+        hwnd = ctypes.windll.user32.GetParent(tk_window.winfo_id())
+        result = ctypes.windll.user32.SetWindowDisplayAffinity(
+            hwnd, WDA_EXCLUDEFROMCAPTURE
+        )
+        if result == 0:
+            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_MONITOR)
+            logger.warning(
+                f"WDA_EXCLUDEFROMCAPTURE not supported for {label}, fell back to WDA_MONITOR"
+            )
+        else:
+            logger.info(f"Screen capture blocking enabled for {label}")
+    except Exception as e:
+        logger.error(f"Failed to set screen capture protection for {label}: {e}")
+
 # Hotkey registration - Using Ctrl+Shift+Q (easier to press)
 MOD_CTRL = 0x0002
 MOD_SHIFT = 0x0004
@@ -121,6 +144,7 @@ class ConsentDialog:
         dialog.configure(bg=Colors.BACKGROUND)
         dialog.transient(self.parent)
         dialog.grab_set()
+        _apply_capture_protection(dialog, "consent dialog")
         
         # Center the dialog
         dialog.update_idletasks()
@@ -272,6 +296,9 @@ class AutoWebApp:
         x = (self.root.winfo_screenwidth() - 550) // 2
         y = (self.root.winfo_screenheight() - 750) // 2
         self.root.geometry(f"550x750+{x}+{y}")
+
+        # Block screen capture for this window (Windows 10+)
+        self._set_window_capture_protection()
         
         logger.info("AutoWebApp initialized")
     
@@ -293,6 +320,10 @@ class AutoWebApp:
             logger.info(f"Window transparency set to {alpha}")
         except Exception as e:
             logger.error(f"Failed to set transparency: {e}")
+
+    def _set_window_capture_protection(self):
+        """Prevent this window from being captured by most screen capture tools."""
+        _apply_capture_protection(self.root, "main window")
     
     def _register_hotkey(self):
         """Register Ctrl+Shift+Q global hotkey to stop automation."""
