@@ -119,7 +119,7 @@ class ConsentDialog:
     NO shortcut info shown here - just settings confirmation.
     """
     
-    def __init__(self, parent: tk.Tk, settings: dict):
+    def __init__(self, parent: tk.Tk, settings: dict, privacy_mode: bool = False):
         """
         Initialize the confirmation dialog.
         
@@ -130,6 +130,7 @@ class ConsentDialog:
         self.parent = parent
         self.settings = settings
         self.confirmed = False
+        self.privacy_mode = privacy_mode
     
     def show(self) -> bool:
         """
@@ -166,10 +167,21 @@ class ConsentDialog:
         settings_frame = tk.Frame(dialog, bg=Colors.SURFACE, padx=20, pady=15)
         settings_frame.pack(fill=tk.X, padx=20, pady=10)
         
-        settings_text = f"""
-🔄 Switch Interval: {self.settings['switch_interval']} seconds
-🖱️ Click Delay Max: {self.settings['click_phase']} seconds
-⏱️ Total Runtime: {self.settings['runtime']} minutes
+        if self.privacy_mode:
+            settings_text = """
+?? Switch Interval: Hidden
+??? Click Delay Max: Hidden
+?? Total Runtime: Hidden
+
+The app will PAUSE on mouse clicks or keyboard presses.
+Mouse movement is ignored.
+Resumes after 30 seconds of inactivity.
+"""
+        else:
+            settings_text = f"""
+?? Switch Interval: {self.settings['switch_interval']} seconds
+??? Click Delay Max: {self.settings['click_phase']} seconds
+?? Total Runtime: {self.settings['runtime']} minutes
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -285,8 +297,12 @@ class AutoWebApp:
         self._hotkey_thread = None
         self._hotkey_stop_event = threading.Event()
         
+        # Privacy shield (redacts on-screen data)
+        self.privacy_mode = tk.BooleanVar(value=True)
+
         # Build UI
         self._create_widgets()
+        self._apply_privacy_mode()
         
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -301,6 +317,39 @@ class AutoWebApp:
         self._set_window_capture_protection()
         
         logger.info("AutoWebApp initialized")
+
+    def _set_privacy_log_placeholder(self) -> None:
+        """Show a placeholder in the log when privacy mode is enabled."""
+        placeholder = "Privacy Shield enabled. Logs hidden.\n"
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.delete(1.0, tk.END)
+        self.log_text.insert(tk.END, placeholder)
+        self.log_text.configure(state=tk.DISABLED)
+
+    def _apply_privacy_mode(self) -> None:
+        """Apply redaction settings across the UI."""
+        enabled = self.privacy_mode.get()
+
+        mask_char = "•" if enabled else ""
+        self.switch_interval_entry.configure(show=mask_char)
+        self.click_phase_entry.configure(show=mask_char)
+        self.runtime_entry.configure(show=mask_char)
+
+        if enabled:
+            self.status_label.configure(text="🔒 HIDDEN", fg=Colors.TEXT_DIM)
+            self.timer_label.configure(text="--:--", fg=Colors.TEXT_DIM)
+            self.runtime_remaining_label.configure(text="--:--", fg=Colors.TEXT_DIM)
+            self.next_action_label.configure(text="--", fg=Colors.TEXT_DIM)
+            self.cycle_label.configure(text="--", fg=Colors.TEXT_DIM)
+            self.app_label.configure(text="Hidden", fg=Colors.TEXT_DIM)
+            self.idle_wait_label.configure(text="")
+            self._set_privacy_log_placeholder()
+        else:
+            self._on_state_change(self.scheduler.state)
+
+    def _on_privacy_toggle(self) -> None:
+        """Handle privacy shield toggle."""
+        self._apply_privacy_mode()
     
     def _set_window_transparency(self, alpha: int = 200):
         """
@@ -428,6 +477,23 @@ class AutoWebApp:
             fg=Colors.TEXT_DIM
         )
         subtitle_label.pack(anchor=tk.W)
+
+        privacy_frame = tk.Frame(header_frame, bg=Colors.BACKGROUND)
+        privacy_frame.pack(anchor=tk.W, pady=(8, 0))
+
+        privacy_toggle = tk.Checkbutton(
+            privacy_frame,
+            text="🔒 Privacy Shield (redact on-screen data)",
+            variable=self.privacy_mode,
+            command=self._on_privacy_toggle,
+            font=Fonts.BODY,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT_DIM,
+            activebackground=Colors.BACKGROUND,
+            activeforeground=Colors.TEXT,
+            selectcolor=Colors.SURFACE
+        )
+        privacy_toggle.pack(anchor=tk.W)
     
     def _create_submit_button(self, parent: tk.Frame) -> None:
         """Create the big SUBMIT button."""
@@ -831,9 +897,13 @@ class AutoWebApp:
         Args:
             message: Message to log
         """
+        if self.privacy_mode.get():
+            self._set_privacy_log_placeholder()
+            return
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted = f"[{timestamp}] {message}\n"
-        
+
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, formatted)
         self.log_text.see(tk.END)  # Scroll to bottom
@@ -841,6 +911,9 @@ class AutoWebApp:
     
     def _clear_log(self) -> None:
         """Clear the activity log."""
+        if self.privacy_mode.get():
+            self._set_privacy_log_placeholder()
+            return
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete(1.0, tk.END)
         self.log_text.configure(state=tk.DISABLED)
@@ -871,6 +944,9 @@ class AutoWebApp:
             state: New scheduler state
         """
         def update_ui():
+            if self.privacy_mode.get():
+                self._apply_privacy_mode()
+                return
             # Update status label
             if state.phase == AutomationPhase.ACTIVE:
                 self.status_label.configure(
@@ -1019,7 +1095,7 @@ class AutoWebApp:
         }
         
         # Show confirmation dialog (no shortcuts shown)
-        dialog = ConsentDialog(self.root, settings)
+        dialog = ConsentDialog(self.root, settings, privacy_mode=self.privacy_mode.get())
         if not dialog.show():
             return  # User clicked Back
         
