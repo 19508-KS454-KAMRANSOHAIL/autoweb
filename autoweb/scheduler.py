@@ -7,13 +7,13 @@ It coordinates the active and idle phases of the automation process.
 
 Automation Cycle:
 -----------------
-1. ACTIVE PHASE (5 minutes):
+1. ACTIVE PHASE (random duration):
    - Random mouse movements
    - Periodic mouse clicks
    - Application/tab switching via keyboard shortcuts
    - Actions occur at randomized intervals
 
-2. IDLE PHASE (2-4 minutes, random):
+2. IDLE PHASE (random duration):
    - No automation activity
    - Simulates natural user breaks
 
@@ -33,7 +33,7 @@ import time
 import random
 import logging
 from enum import Enum, auto
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -79,8 +79,8 @@ class SchedulerState:
     last_action: str = ""         # Description of last action taken
     is_running: bool = False
     next_action_in: int = 0       # Seconds until next action
-    total_runtime: int = 300      # Total runtime in seconds (default 5 min)
-    runtime_remaining: int = 300  # Seconds remaining until auto-close
+    total_runtime: Optional[int] = None  # None = run until stopped
+    runtime_remaining: int = 0    # Remaining seconds, or elapsed when total_runtime is None
     idle_wait_remaining: int = 0  # Seconds until user considered idle (120s countdown)
     is_user_active: bool = False  # Whether user is currently active
 
@@ -91,7 +91,8 @@ class SchedulerConfig:
     Configuration for the automation scheduler.
     
     Attributes:
-        active_duration: Duration of active phase in seconds
+        active_min: Minimum active phase duration in seconds
+        active_max: Maximum active phase duration in seconds
         idle_min: Minimum idle phase duration in seconds
         idle_max: Maximum idle phase duration in seconds
         action_interval_min: Minimum seconds between actions (scroll, tab, mouse)
@@ -99,10 +100,12 @@ class SchedulerConfig:
         app_switch_interval: Seconds between app switches (separate from actions)
         click_probability: Probability of performing a click (0-1)
         click_phase_max: Maximum random delay before click (0 to this value)
-        total_runtime: Total runtime before auto-close in seconds (default: 5 min)
+        total_runtime: Total runtime before auto-close in seconds (None = run until stopped)
         user_idle_timeout: Seconds of inactivity before resuming (default: 120s)
+        repeat_screens: Whether to allow repeating screen views within a cycle
     """
-    active_duration: int = 300      # 5 minutes
+    active_min: int = 300           # 5 minutes
+    active_max: int = 600           # 10 minutes
     idle_min: int = 120             # 2 minutes
     idle_max: int = 240             # 4 minutes
     action_interval_min: float = 3.0   # Actions every 3-8 seconds
@@ -112,8 +115,9 @@ class SchedulerConfig:
     tab_switch_probability: float = 0.20
     scroll_probability: float = 0.25   # Scrolling in VS Code and other apps
     click_phase_max: float = 10.0      # Random delay 0 to this value before clicks
-    total_runtime: int = 300           # 5 minutes default
+    total_runtime: Optional[int] = None  # None = run until stopped
     user_idle_timeout: float = 30.0    # 30 seconds of inactivity before resuming
+    repeat_screens: bool = True
 
 
 class AutomationScheduler:
@@ -204,6 +208,9 @@ class AutomationScheduler:
         
         # App switch timing (separate from action interval)
         self._last_app_switch_time = 0.0
+        
+        # Screen cycle tracking (unique screen switching)
+        self._screen_seen = set()
         
         logger.info("AutomationScheduler initialized")
     
@@ -309,6 +316,8 @@ class AutomationScheduler:
         Returns:
             True if runtime has expired, False otherwise
         """
+        if self.config.total_runtime is None:
+            return False
         if self._start_time is None:
             return False
         
@@ -316,13 +325,45 @@ class AutomationScheduler:
         return elapsed >= self.config.total_runtime
     
     def _get_runtime_remaining(self) -> int:
-        """Get seconds remaining in total runtime."""
+        """Get seconds remaining in total runtime, or elapsed if runtime is unlimited."""
         if self._start_time is None:
-            return self.config.total_runtime
+            return 0 if self.config.total_runtime is None else self.config.total_runtime
         
         elapsed = time.time() - self._start_time - self._paused_time
+        if self.config.total_runtime is None:
+            return max(0, int(elapsed))
+        
         remaining = self.config.total_runtime - elapsed
         return max(0, int(remaining))
+
+    def _normalize_range(self, min_value: float, max_value: float, minimum: int = 0) -> Tuple[int, int]:
+        """
+        Normalize a min/max range to valid integers and ensure ordering.
+
+        Args:
+            min_value: Minimum value
+            max_value: Maximum value
+            minimum: Absolute minimum allowed value
+
+        Returns:
+            (min_val, max_val) as integers
+        """
+        min_val = max(minimum, int(min_value))
+        max_val = max(minimum, int(max_value))
+        if max_val < min_val:
+            min_val, max_val = max_val, min_val
+        return min_val, max_val
+
+    def _get_active_duration(self) -> int:
+        """Get randomized active duration in seconds."""
+        min_val, max_val = self._normalize_range(
+            self.config.active_min,
+            self.config.active_max,
+            minimum=1
+        )
+        if max_val == min_val:
+            return min_val
+        return random.randint(min_val, max_val)
     
     def _refresh_window_list(self) -> None:
         """Refresh the list of windows for round-robin cycling."""
@@ -429,6 +470,58 @@ class AutomationScheduler:
             List of visible WindowInfo objects
         """
         return self.window_manager.get_visible_windows()
+
+    def _get_screen_id(self, window) -> Optional[tuple]:
+        """Get a unique identifier for the current screen."""
+        if not window:
+            return None
+        return (window.hwnd, window.title)
+
+    def _record_current_screen(self) -> None:
+        """Record the current screen as seen in this cycle."""
+        window = self.window_manager.get_foreground_window()
+        screen_id = self._get_screen_id(window)
+        if screen_id:
+            self._screen_seen.add(screen_id)
+
+    def _reset_screen_cycle(self) -> None:
+        """Reset the screen cycle so repeats are allowed again."""
+        self._screen_seen.clear()
+        self._record_current_screen()
+
+    def _switch_tab_until_unseen(self, app_name: str, max_steps: int = 30) -> Optional[str]:
+        """
+        Switch tabs in the current app until an unseen screen is found.
+
+        Returns:
+            Description of action taken, or None if no unseen tab found.
+        """
+        current_window = self.window_manager.get_foreground_window()
+        if not current_window:
+            return None
+
+        original_title = current_window.title
+        original_id = self._get_screen_id(current_window)
+
+        for _ in range(max_steps):
+            self.input_simulator.shortcut_ctrl_tab()
+            time.sleep(0.2)
+            window = self.window_manager.get_foreground_window()
+            if not window:
+                continue
+
+            screen_id = self._get_screen_id(window)
+            if screen_id and screen_id not in self._screen_seen:
+                self._screen_seen.add(screen_id)
+                self._update_state(current_app=window.title)
+                return f"Screen switch: tab in {app_name} -> {window.title[:25]}..."
+
+            if original_id and screen_id == original_id:
+                break
+            if window.title == original_title:
+                break
+
+        return None
     
     def _wait_for_resume_or_stop(self, timeout: float = 0.5) -> bool:
         """
@@ -477,7 +570,10 @@ class AutomationScheduler:
             Selected ActionType
         """
         actions = list(self._action_weights.keys())
-        weights = list(self._action_weights.values())
+        if not self.config.repeat_screens and ActionType.TAB_SWITCH in actions:
+            actions.remove(ActionType.TAB_SWITCH)
+
+        weights = [self._action_weights[action] for action in actions]
         return random.choices(actions, weights=weights, k=1)[0]
     
     def _execute_action(self, action: ActionType) -> str:
@@ -587,6 +683,18 @@ class AutomationScheduler:
         """
         if self._pause_event.is_set():
             return "App switch skipped - user active"
+
+        if not self.config.repeat_screens:
+            unique_desc = self._execute_unique_screen_switch()
+            if unique_desc:
+                return unique_desc
+            # If no unique screen found, reset cycle and try again
+            self._reset_screen_cycle()
+            unique_desc = self._execute_unique_screen_switch()
+            if unique_desc:
+                return unique_desc
+            # Fall back to normal switching if still blocked
+            logger.info("Unique screen switch fallback to standard app switch")
         
         self.idle_detector.suppress_activity()
         
@@ -643,6 +751,61 @@ class AutomationScheduler:
             return f"Error: {str(e)}"
         finally:
             self.idle_detector.restore_activity()
+
+    def _execute_unique_screen_switch(self) -> Optional[str]:
+        """
+        Switch to a unique screen (app window or tab) without repeats in a cycle.
+
+        Returns:
+            Description of the action taken, or None if no unique screen found.
+        """
+        self._refresh_window_list()
+
+        if not self._known_windows:
+            return None
+
+        # Try current app tabs first if supported
+        current_window = self.window_manager.get_foreground_window()
+        current_app = current_window.title if current_window else ""
+        supports_tabs = any(app in current_app for app in self._tab_apps)
+
+        if supports_tabs:
+            app_name = "Chrome" if self._is_chrome(current_app) else "VS Code" if self._is_vscode(current_app) else current_app[:20]
+            tab_desc = self._switch_tab_until_unseen(app_name)
+            if tab_desc:
+                return tab_desc
+
+        # Try switching apps/windows round-robin and pick an unseen screen
+        max_attempts = len(self._known_windows)
+        attempts = 0
+        while attempts < max_attempts:
+            next_app = self._get_next_app_round_robin()
+            if not next_app:
+                return None
+
+            if self.window_manager.switch_to_window(next_app.hwnd):
+                time.sleep(0.3)
+                window = self.window_manager.get_foreground_window()
+                if not window:
+                    attempts += 1
+                    continue
+
+                screen_id = self._get_screen_id(window)
+                if screen_id and screen_id not in self._screen_seen:
+                    self._screen_seen.add(screen_id)
+                    self._update_state(current_app=window.title)
+                    return f"Screen switch: {window.title[:30]}..."
+
+                # If this app supports tabs, try to find an unseen tab
+                if any(app in window.title for app in self._tab_apps):
+                    app_name = "Chrome" if self._is_chrome(window.title) else "VS Code" if self._is_vscode(window.title) else window.title[:20]
+                    tab_desc = self._switch_tab_until_unseen(app_name)
+                    if tab_desc:
+                        return tab_desc
+
+            attempts += 1
+
+        return None
     
     def _active_phase(self) -> None:
         """
@@ -654,10 +817,13 @@ class AutomationScheduler:
         - Continues for configured duration
         - Can be interrupted by stop event or user activity
         """
-        duration = self.config.active_duration
+        duration = self._get_active_duration()
         start_time = time.time()
         
-        logger.info(f"Starting active phase for {duration} seconds")
+        logger.info(
+            f"Starting active phase for {duration} seconds "
+            f"(range: {self.config.active_min}-{self.config.active_max})"
+        )
         self._update_state(
             phase=AutomationPhase.ACTIVE,
             time_remaining=duration
@@ -772,10 +938,15 @@ class AutomationScheduler:
             logger.info("Skipping idle phase (duration set to 0)")
             return
         
-        duration = random.randint(
-            max(1, self.config.idle_min),
-            max(1, self.config.idle_max)
+        idle_min, idle_max = self._normalize_range(
+            self.config.idle_min,
+            self.config.idle_max,
+            minimum=0
         )
+        if idle_min == 0 and idle_max == 0:
+            logger.info("Skipping idle phase (duration set to 0)")
+            return
+        duration = random.randint(idle_min, idle_max)
         
         logger.info(f"Starting idle phase for {duration} seconds")
         self._update_state(
@@ -892,6 +1063,8 @@ class AutomationScheduler:
         self._paused_time = 0.0
         self._pause_start = None
         self._last_app_switch_time = time.time()  # Initialize app switch timer
+        self._screen_seen.clear()
+        self._record_current_screen()
         
         # Update state
         self._update_state(
@@ -899,7 +1072,7 @@ class AutomationScheduler:
             cycle_count=0,
             last_action="Starting...",
             total_runtime=self.config.total_runtime,
-            runtime_remaining=self.config.total_runtime,
+            runtime_remaining=self._get_runtime_remaining(),
             is_user_active=False,
             idle_wait_remaining=0
         )
@@ -974,7 +1147,8 @@ if __name__ == "__main__":
     
     # Create scheduler with shorter durations for testing
     config = SchedulerConfig(
-        active_duration=30,  # 30 seconds for testing
+        active_min=30,   # 30 seconds for testing
+        active_max=30,
         idle_min=10,
         idle_max=15,
         action_interval_min=2.0,

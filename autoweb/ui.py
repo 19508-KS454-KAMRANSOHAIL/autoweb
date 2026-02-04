@@ -36,7 +36,7 @@ from ctypes import wintypes
 import threading
 from datetime import datetime
 
-from .scheduler import AutomationScheduler, SchedulerState, AutomationPhase, SchedulerConfig
+from .scheduler import AutomationScheduler, SchedulerState, AutomationPhase
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -125,7 +125,7 @@ class ConsentDialog:
         
         Args:
             parent: Parent window
-            settings: Dictionary with switch_interval, click_phase, runtime
+            settings: Dictionary with active_min, active_max, idle_min, idle_max, app_switch, total_runtime
         """
         self.parent = parent
         self.settings = settings
@@ -169,9 +169,11 @@ class ConsentDialog:
         
         if self.privacy_mode:
             settings_text = """
-?? Switch Interval: Hidden
-??? Click Delay Max: Hidden
+?? Active Duration: Hidden
+?? Pause Duration: Hidden
+?? App Switch: Hidden
 ?? Total Runtime: Hidden
+?? Repeat Screens: Hidden
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -179,9 +181,11 @@ Resumes after 30 seconds of inactivity.
 """
         else:
             settings_text = f"""
-?? Switch Interval: {self.settings['switch_interval']} seconds
-??? Click Delay Max: {self.settings['click_phase']} seconds
-?? Total Runtime: {self.settings['runtime']} minutes
+?? Active Duration: {self.settings['active_min']}-{self.settings['active_max']}
+?? Pause Duration: {self.settings['idle_min']}-{self.settings['idle_max']}
+?? App Switch: {self.settings['app_switch']}
+?? Total Runtime: {self.settings['total_runtime']}
+?? Repeat Screens: {self.settings['repeat_screens']}
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -264,6 +268,12 @@ class AutoWebApp:
     
     # Hotkey ID for Win+F12
     HOTKEY_ID = 1
+    DEFAULT_ACTIVE_MIN_SEC = 300
+    DEFAULT_ACTIVE_MAX_SEC = 600
+    DEFAULT_IDLE_MIN_SEC = 120
+    DEFAULT_IDLE_MAX_SEC = 240
+    DEFAULT_RUNTIME_SEC = 300
+    DEFAULT_APP_SWITCH_SEC = 5
     
     def __init__(self):
         """Initialize the main application window."""
@@ -330,10 +340,13 @@ class AutoWebApp:
         """Apply redaction settings across the UI."""
         enabled = self.privacy_mode.get()
 
-        mask_char = "•" if enabled else ""
-        self.switch_interval_entry.configure(show=mask_char)
-        self.click_phase_entry.configure(show=mask_char)
-        self.runtime_entry.configure(show=mask_char)
+        # Keep inputs visible even when privacy mode is enabled
+        self.active_min_entry.configure(show="")
+        self.active_max_entry.configure(show="")
+        self.idle_min_entry.configure(show="")
+        self.idle_max_entry.configure(show="")
+        self.app_switch_entry.configure(show="")
+        self.total_runtime_entry.configure(show="")
 
         if enabled:
             self.status_label.configure(text="🔒 HIDDEN", fg=Colors.TEXT_DIM)
@@ -546,62 +559,26 @@ class AutoWebApp:
         )
         settings_title.pack(anchor=tk.W, pady=(0, 10))
         
-        # First row: Switch Interval and Total Runtime
+        # First row: Active (clicking) duration range
         row1 = tk.Frame(settings_frame, bg=Colors.SURFACE)
         row1.pack(fill=tk.X, pady=(0, 10))
         
-        # --- Screen Switch Interval Setting ---
-        switch_frame = tk.Frame(row1, bg=Colors.SURFACE)
-        switch_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        active_min_frame = tk.Frame(row1, bg=Colors.SURFACE)
+        active_min_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        switch_label = tk.Label(
-            switch_frame,
-            text="🔄 Switch Interval (seconds):",
+        active_min_label = tk.Label(
+            active_min_frame,
+            text="▶️ Active Min (mm:ss):",
             font=Fonts.BODY,
             bg=Colors.SURFACE,
             fg=Colors.TEXT_DIM
         )
-        switch_label.pack(anchor=tk.W)
+        active_min_label.pack(anchor=tk.W)
         
-        self.switch_interval_var = tk.StringVar(value="5")  # Default: 5 seconds
-        self.switch_interval_entry = tk.Entry(
-            switch_frame,
-            textvariable=self.switch_interval_var,
-            font=Fonts.BODY,
-            width=8,
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            insertbackground=Colors.TEXT,
-            relief=tk.FLAT
-        )
-        self.switch_interval_entry.pack(anchor=tk.W, pady=(3, 0))
-        
-        switch_note = tk.Label(
-            switch_frame,
-            text="Time between screen switches",
-            font=("Segoe UI", 8),
-            bg=Colors.SURFACE,
-            fg=Colors.TEXT_DIM
-        )
-        switch_note.pack(anchor=tk.W)
-        
-        # --- Click Phase Time Setting ---
-        click_frame = tk.Frame(row1, bg=Colors.SURFACE)
-        click_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        click_label = tk.Label(
-            click_frame,
-            text="🖱️ Click Phase (seconds):",
-            font=Fonts.BODY,
-            bg=Colors.SURFACE,
-            fg=Colors.TEXT_DIM
-        )
-        click_label.pack(anchor=tk.W)
-        
-        self.click_phase_var = tk.StringVar(value="10")  # Default: max 10 seconds
-        self.click_phase_entry = tk.Entry(
-            click_frame,
-            textvariable=self.click_phase_var,
+        self.active_min_var = tk.StringVar(value=self._format_time(self.DEFAULT_ACTIVE_MIN_SEC))
+        self.active_min_entry = tk.Entry(
+            active_min_frame,
+            textvariable=self.active_min_var,
             font=Fonts.BODY,
             width=8,
             bg=Colors.BACKGROUND,
@@ -609,38 +586,177 @@ class AutoWebApp:
             insertbackground=Colors.TEXT,
             relief=tk.FLAT
         )
-        self.click_phase_entry.pack(anchor=tk.W, pady=(3, 0))
+        self.active_min_entry.pack(anchor=tk.W, pady=(3, 0))
         
-        click_note = tk.Label(
-            click_frame,
-            text="Random delay before clicks",
+        active_min_note = tk.Label(
+            active_min_frame,
+            text="Minimum active time",
             font=("Segoe UI", 8),
             bg=Colors.SURFACE,
             fg=Colors.TEXT_DIM
         )
-        click_note.pack(anchor=tk.W)
+        active_min_note.pack(anchor=tk.W)
         
-        # Second row: Total Runtime
+        active_max_frame = tk.Frame(row1, bg=Colors.SURFACE)
+        active_max_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        active_max_label = tk.Label(
+            active_max_frame,
+            text="▶️ Active Max (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        active_max_label.pack(anchor=tk.W)
+        
+        self.active_max_var = tk.StringVar(value=self._format_time(self.DEFAULT_ACTIVE_MAX_SEC))
+        self.active_max_entry = tk.Entry(
+            active_max_frame,
+            textvariable=self.active_max_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.active_max_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        active_max_note = tk.Label(
+            active_max_frame,
+            text="Maximum active time",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        active_max_note.pack(anchor=tk.W)
+        
+        # Second row: Pause duration range
         row2 = tk.Frame(settings_frame, bg=Colors.SURFACE)
         row2.pack(fill=tk.X, pady=(0, 10))
         
-        # --- Total Runtime Setting ---
-        runtime_frame = tk.Frame(row2, bg=Colors.SURFACE)
+        idle_min_frame = tk.Frame(row2, bg=Colors.SURFACE)
+        idle_min_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        idle_min_label = tk.Label(
+            idle_min_frame,
+            text="⏸️ Pause Min (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        idle_min_label.pack(anchor=tk.W)
+        
+        self.idle_min_var = tk.StringVar(value=self._format_time(self.DEFAULT_IDLE_MIN_SEC))
+        self.idle_min_entry = tk.Entry(
+            idle_min_frame,
+            textvariable=self.idle_min_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.idle_min_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        idle_min_note = tk.Label(
+            idle_min_frame,
+            text="Minimum pause time",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        idle_min_note.pack(anchor=tk.W)
+        
+        idle_max_frame = tk.Frame(row2, bg=Colors.SURFACE)
+        idle_max_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        idle_max_label = tk.Label(
+            idle_max_frame,
+            text="⏸️ Pause Max (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        idle_max_label.pack(anchor=tk.W)
+        
+        self.idle_max_var = tk.StringVar(value=self._format_time(self.DEFAULT_IDLE_MAX_SEC))
+        self.idle_max_entry = tk.Entry(
+            idle_max_frame,
+            textvariable=self.idle_max_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.idle_max_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        idle_max_note = tk.Label(
+            idle_max_frame,
+            text="Maximum pause time",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        idle_max_note.pack(anchor=tk.W)
+        
+        # Third row: App switch interval and total runtime
+        row3 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row3.pack(fill=tk.X, pady=(0, 10))
+        
+        app_switch_frame = tk.Frame(row3, bg=Colors.SURFACE)
+        app_switch_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        app_switch_label = tk.Label(
+            app_switch_frame,
+            text="🔄 App Switch (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        app_switch_label.pack(anchor=tk.W)
+        
+        self.app_switch_var = tk.StringVar(value=self._format_time(self.DEFAULT_APP_SWITCH_SEC))
+        self.app_switch_entry = tk.Entry(
+            app_switch_frame,
+            textvariable=self.app_switch_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.app_switch_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        app_switch_note = tk.Label(
+            app_switch_frame,
+            text="Time between screen changes",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        app_switch_note.pack(anchor=tk.W)
+        
+        runtime_frame = tk.Frame(row3, bg=Colors.SURFACE)
         runtime_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         runtime_label = tk.Label(
             runtime_frame,
-            text="⏱️ Total Runtime (minutes):",
+            text="⏱️ Total Runtime (mm:ss):",
             font=Fonts.BODY,
             bg=Colors.SURFACE,
             fg=Colors.TEXT_DIM
         )
         runtime_label.pack(anchor=tk.W)
         
-        self.runtime_var = tk.StringVar(value="5")  # Default: 5 minutes
-        self.runtime_entry = tk.Entry(
+        self.total_runtime_var = tk.StringVar(value=self._format_time(self.DEFAULT_RUNTIME_SEC))
+        self.total_runtime_entry = tk.Entry(
             runtime_frame,
-            textvariable=self.runtime_var,
+            textvariable=self.total_runtime_var,
             font=Fonts.BODY,
             width=8,
             bg=Colors.BACKGROUND,
@@ -648,7 +764,7 @@ class AutoWebApp:
             insertbackground=Colors.TEXT,
             relief=tk.FLAT
         )
-        self.runtime_entry.pack(anchor=tk.W, pady=(3, 0))
+        self.total_runtime_entry.pack(anchor=tk.W, pady=(3, 0))
         
         runtime_note = tk.Label(
             runtime_frame,
@@ -659,25 +775,40 @@ class AutoWebApp:
         )
         runtime_note.pack(anchor=tk.W)
         
-        # Second row: Active/Idle Phase Settings (hidden - use defaults)
-        # Keep variables for backward compatibility
-        self.interval_min_var = tk.StringVar(value="3")
-        self.interval_max_var = tk.StringVar(value="10")
-        self.active_duration_var = tk.StringVar(value="5")
-        self.idle_min_var = tk.StringVar(value="2")
-        self.idle_max_var = tk.StringVar(value="4")
+        # Reset defaults button
+        reset_frame = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        reset_frame.pack(fill=tk.X, pady=(5, 0))
         
-        # Create hidden entries (not displayed but needed for _set_settings_enabled)
-        self.interval_min_entry = tk.Entry(settings_frame)
-        self.interval_max_entry = tk.Entry(settings_frame)
-        self.active_duration_entry = tk.Entry(settings_frame)
-        self.idle_min_entry = tk.Entry(settings_frame)
-        self.idle_max_entry = tk.Entry(settings_frame)
+        self.repeat_screens_var = tk.BooleanVar(value=True)
+        self.repeat_checkbox = tk.Checkbutton(
+            reset_frame,
+            text="Repeat Screen View",
+            variable=self.repeat_screens_var,
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT,
+            activebackground=Colors.SURFACE,
+            activeforeground=Colors.TEXT,
+            selectcolor=Colors.SURFACE
+        )
+        self.repeat_checkbox.pack(side=tk.LEFT)
+
+        reset_btn = tk.Button(
+            reset_frame,
+            text="Reset Defaults",
+            command=self._reset_defaults,
+            font=Fonts.BODY,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            relief=tk.FLAT,
+            cursor="hand2"
+        )
+        reset_btn.pack(side=tk.RIGHT)
         
         # Tip label
         tip_label = tk.Label(
             settings_frame,
-            text="💡 Set your switch interval and runtime, then click Start.",
+            text="💡 Use mm:ss. Active and pause ranges are randomized each cycle.",
             font=("Segoe UI", 9),
             bg=Colors.SURFACE,
             fg=Colors.TEXT_DIM
@@ -740,7 +871,7 @@ class AutoWebApp:
         
         self.runtime_remaining_label = tk.Label(
             runtime_frame,
-            text="05:00",
+            text=self._format_time(self.DEFAULT_RUNTIME_SEC),
             font=("Segoe UI", 14, "bold"),
             bg=Colors.SURFACE,
             fg=Colors.PRIMARY
@@ -1023,9 +1154,23 @@ class AutoWebApp:
     def _set_settings_enabled(self, enabled: bool) -> None:
         """Enable or disable settings inputs."""
         state = tk.NORMAL if enabled else tk.DISABLED
-        self.switch_interval_entry.configure(state=state)
-        self.click_phase_entry.configure(state=state)
-        self.runtime_entry.configure(state=state)
+        self.active_min_entry.configure(state=state)
+        self.active_max_entry.configure(state=state)
+        self.idle_min_entry.configure(state=state)
+        self.idle_max_entry.configure(state=state)
+        self.app_switch_entry.configure(state=state)
+        self.total_runtime_entry.configure(state=state)
+        self.repeat_checkbox.configure(state=state)
+
+    def _reset_defaults(self) -> None:
+        """Reset timing inputs to default values."""
+        self.active_min_var.set(self._format_time(self.DEFAULT_ACTIVE_MIN_SEC))
+        self.active_max_var.set(self._format_time(self.DEFAULT_ACTIVE_MAX_SEC))
+        self.idle_min_var.set(self._format_time(self.DEFAULT_IDLE_MIN_SEC))
+        self.idle_max_var.set(self._format_time(self.DEFAULT_IDLE_MAX_SEC))
+        self.app_switch_var.set(self._format_time(self.DEFAULT_APP_SWITCH_SEC))
+        self.total_runtime_var.set(self._format_time(self.DEFAULT_RUNTIME_SEC))
+        self.repeat_screens_var.set(True)
     
     def _on_stop(self) -> None:
         """Handle stop action."""
@@ -1070,28 +1215,81 @@ class AutoWebApp:
     def _on_submit(self) -> None:
         """Handle SUBMIT button click - show confirmation dialog."""
         # Get settings from inputs
-        try:
-            switch_interval = float(self.switch_interval_var.get())
-            click_phase_max = float(self.click_phase_var.get())
-            runtime = float(self.runtime_var.get())
-            
-            if switch_interval <= 0:
-                switch_interval = 5
-            if click_phase_max <= 0:
-                click_phase_max = 10
-            if runtime <= 0:
-                runtime = 5
-                
-        except ValueError:
-            switch_interval = 5
-            click_phase_max = 10
-            runtime = 5
+        def _parse_time_to_seconds(value: str, default_seconds: int, assume_minutes: bool = True) -> int:
+            try:
+                text = value.strip()
+                if not text:
+                    return default_seconds
+                if ":" in text:
+                    parts = text.split(":")
+                    if len(parts) != 2:
+                        return default_seconds
+                    minutes = int(parts[0])
+                    seconds = int(parts[1])
+                    if minutes < 0 or seconds < 0:
+                        return default_seconds
+                    return (minutes * 60) + seconds
+                number = float(text)
+                if number <= 0:
+                    return default_seconds
+                if assume_minutes:
+                    return int(round(number * 60))
+                return int(round(number))
+            except ValueError:
+                return default_seconds
+        
+        active_min = _parse_time_to_seconds(
+            self.active_min_var.get(),
+            self.DEFAULT_ACTIVE_MIN_SEC,
+            assume_minutes=True
+        )
+        active_max = _parse_time_to_seconds(
+            self.active_max_var.get(),
+            self.DEFAULT_ACTIVE_MAX_SEC,
+            assume_minutes=True
+        )
+        idle_min = _parse_time_to_seconds(
+            self.idle_min_var.get(),
+            self.DEFAULT_IDLE_MIN_SEC,
+            assume_minutes=True
+        )
+        idle_max = _parse_time_to_seconds(
+            self.idle_max_var.get(),
+            self.DEFAULT_IDLE_MAX_SEC,
+            assume_minutes=True
+        )
+        app_switch = _parse_time_to_seconds(
+            self.app_switch_var.get(),
+            self.DEFAULT_APP_SWITCH_SEC,
+            assume_minutes=False
+        )
+        total_runtime = _parse_time_to_seconds(
+            self.total_runtime_var.get(),
+            self.DEFAULT_RUNTIME_SEC,
+            assume_minutes=True
+        )
+
+        if active_max < active_min:
+            active_min, active_max = active_max, active_min
+        if idle_max < idle_min:
+            idle_min, idle_max = idle_max, idle_min
+        
+        active_min_display = self._format_time(active_min)
+        active_max_display = self._format_time(active_max)
+        idle_min_display = self._format_time(idle_min)
+        idle_max_display = self._format_time(idle_max)
+        app_switch_display = self._format_time(app_switch)
+        total_runtime_display = self._format_time(total_runtime)
         
         # Create settings dict
         settings = {
-            'switch_interval': switch_interval,
-            'click_phase': click_phase_max,
-            'runtime': runtime
+            'active_min': active_min_display,
+            'active_max': active_max_display,
+            'idle_min': idle_min_display,
+            'idle_max': idle_max_display,
+            'app_switch': app_switch_display,
+            'total_runtime': total_runtime_display,
+            'repeat_screens': "Yes" if self.repeat_screens_var.get() else "No"
         }
         
         # Show confirmation dialog (no shortcuts shown)
@@ -1100,26 +1298,30 @@ class AutoWebApp:
             return  # User clicked Back
         
         # User confirmed - start automation
-        self._log_message(f"Settings: App Switch {switch_interval}s, Click 0-{click_phase_max}s, Runtime {int(runtime)}min")
+        self._log_message(
+            "Settings: "
+            f"Active {active_min_display}-{active_max_display}, "
+            f"Pause {idle_min_display}-{idle_max_display}, "
+            f"App Switch {app_switch_display}, "
+            f"Total {total_runtime_display}, "
+            f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
+        )
         
         # Register hotkey (Ctrl+Shift+Q to stop)
         self._register_hotkey()
         
         # Apply settings to scheduler
-        total_runtime = int(runtime * 60)  # Convert minutes to seconds
-        
-        # App switch interval is the user's setting (e.g., 300 seconds)
-        self.scheduler.config.app_switch_interval = switch_interval
-        
         # Action interval is fast (3-8 seconds) for scroll, tab switch, mouse move
         self.scheduler.config.action_interval_min = 3.0
         self.scheduler.config.action_interval_max = 8.0
         
-        self.scheduler.config.click_phase_max = click_phase_max
-        self.scheduler.config.active_duration = total_runtime
-        self.scheduler.config.idle_min = 0
-        self.scheduler.config.idle_max = 0
+        self.scheduler.config.active_min = active_min
+        self.scheduler.config.active_max = active_max
+        self.scheduler.config.idle_min = idle_min
+        self.scheduler.config.idle_max = idle_max
+        self.scheduler.config.app_switch_interval = app_switch
         self.scheduler.config.total_runtime = total_runtime
+        self.scheduler.config.repeat_screens = self.repeat_screens_var.get()
         
         # Disable submit button
         self.submit_btn.configure(state=tk.DISABLED)
@@ -1128,7 +1330,13 @@ class AutoWebApp:
         # Start automation
         if self.scheduler.start():
             self._log_message("Automation started")
-            self._log_message(f"Apps switch every {int(switch_interval)} seconds")
+            self._log_message(
+                f"Active {active_min_display}-{active_max_display}, "
+                f"Pause {idle_min_display}-{idle_max_display}, "
+                f"App Switch {app_switch_display}, "
+                f"Total {total_runtime_display}, "
+                f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
+            )
             self._log_message("PAUSES on clicks/keyboard only")
             
             # Make window INVISIBLE
