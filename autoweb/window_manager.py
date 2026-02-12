@@ -333,6 +333,122 @@ class WindowManager:
             List of WindowInfo for visible windows only
         """
         return self.get_all_windows()  # Already filters minimized in get_all_windows
+    
+    def find_monitask_windows(self) -> List[WindowInfo]:
+        """
+        Find all MoniTask related windows.
+        
+        Returns:
+            List of MoniTask windows found
+        """
+        all_windows = self.get_all_windows()
+        monitask_windows = []
+        
+        for window in all_windows:
+            title_lower = window.title.lower()
+            # Look for various MoniTask window titles
+            if any(keyword in title_lower for keyword in [
+                'monitask', 'confirmation', 'you\'ve been idle', 
+                'do you wish to pause', 'remove this time'
+            ]):
+                monitask_windows.append(window)
+                
+        return monitask_windows
+    
+    def minimize_window(self, hwnd: int) -> bool:
+        """
+        Minimize a window.
+        
+        Args:
+            hwnd: Window handle to minimize
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # SW_MINIMIZE = 6
+            result = self.user32.ShowWindow(hwnd, 6)
+            if result:
+                logger.info(f"Successfully minimized window {hwnd}")
+                return True
+            else:
+                logger.warning(f"Failed to minimize window {hwnd}")
+                return False
+        except Exception as e:
+            logger.error(f"Error minimizing window {hwnd}: {e}")
+            return False
+    
+    def click_button_by_text(self, hwnd: int, button_text: str) -> bool:
+        """
+        Find and click a button with specific text in a window.
+        
+        Args:
+            hwnd: Window handle containing the button
+            button_text: Text to look for on the button
+            
+        Returns:
+            True if button was found and clicked, False otherwise
+        """
+        try:
+            # Try to find child controls (buttons) in the window
+            def enum_child_proc(child_hwnd, lparam):
+                try:
+                    # Get the text of the child control
+                    length = self.user32.GetWindowTextLengthW(child_hwnd)
+                    if length > 0:
+                        buffer = ctypes.create_unicode_buffer(length + 1)
+                        self.user32.GetWindowTextW(child_hwnd, buffer, length + 1)
+                        child_text = buffer.value
+                        
+                        # Check if this is the button we're looking for
+                        if button_text.lower() in child_text.lower():
+                            # Get button position and size
+                            rect = wintypes.RECT()
+                            if self.user32.GetWindowRect(child_hwnd, ctypes.byref(rect)):
+                                # Calculate center of button
+                                x = (rect.left + rect.right) // 2
+                                y = (rect.top + rect.bottom) // 2
+                                
+                                # Click the button
+                                self._click_at_position(x, y)
+                                logger.info(f"Clicked button '{child_text}' at ({x}, {y})")
+                                return False  # Stop enumeration
+                except Exception as e:
+                    logger.debug(f"Error processing child window: {e}")
+                    
+                return True  # Continue enumeration
+            
+            # Enumerate child windows to find buttons
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            enum_proc = WNDENUMPROC(enum_child_proc)
+            self.user32.EnumChildWindows(hwnd, enum_proc, 0)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error clicking button '{button_text}' in window {hwnd}: {e}")
+            return False
+    
+    def _click_at_position(self, x: int, y: int):
+        """
+        Perform a mouse click at the specified screen coordinates.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+        """
+        # Set cursor position
+        self.user32.SetCursorPos(x, y)
+        
+        # Mouse down
+        self.user32.mouse_event(0x0002, x, y, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+        
+        # Small delay
+        import time
+        time.sleep(0.1)
+        
+        # Mouse up  
+        self.user32.mouse_event(0x0004, x, y, 0, 0)  # MOUSEEVENTF_LEFTUP
 
 
 # Example usage and testing

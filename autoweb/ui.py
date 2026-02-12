@@ -34,9 +34,12 @@ import sys
 import ctypes
 from ctypes import wintypes
 import threading
+import subprocess
 from datetime import datetime
 
 from .scheduler import AutomationScheduler, SchedulerState, AutomationPhase
+from .global_hotkey import GlobalHotkey, MOD_CTRL, MOD_SHIFT, VK_MAP
+from .force_logout import ForceLogoutHandler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -141,7 +144,7 @@ class ConsentDialog:
         """
         dialog = tk.Toplevel(self.parent)
         dialog.title("Confirm Settings")
-        dialog.geometry("450x400")  # Taller dialog
+        dialog.geometry("450x480")  # Much taller dialog to accommodate all content
         dialog.configure(bg=Colors.BACKGROUND)
         dialog.transient(self.parent)
         dialog.grab_set()
@@ -150,8 +153,8 @@ class ConsentDialog:
         # Center the dialog
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() - 450) // 2
-        y = (dialog.winfo_screenheight() - 400) // 2
-        dialog.geometry(f"450x400+{x}+{y}")
+        y = (dialog.winfo_screenheight() - 480) // 2
+        dialog.geometry(f"450x480+{x}+{y}")
         
         # Title
         title_label = tk.Label(
@@ -169,11 +172,15 @@ class ConsentDialog:
         
         if self.privacy_mode:
             settings_text = """
-?? Active Duration: Hidden
-?? Pause Duration: Hidden
-?? App Switch: Hidden
-?? Total Runtime: Hidden
-?? Repeat Screens: Hidden
+\u23f1 Active Duration: Hidden
+\u23f8 Pause Duration: Hidden
+\ud83d\udd04 App Switch: Hidden
+\ud83d\uddb1 Auto-Click: Hidden
+\u23f1 Total Runtime: Hidden
+\ud83d\udd01 Repeat Screens: Hidden
+\ud83d\udd11 Shortcut: Hidden
+\u26a0 Force Logout: Hidden
+\ud83d\udeba Simple Logout: Hidden
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -181,11 +188,15 @@ Resumes after 30 seconds of inactivity.
 """
         else:
             settings_text = f"""
-?? Active Duration: {self.settings['active_min']}-{self.settings['active_max']}
-?? Pause Duration: {self.settings['idle_min']}-{self.settings['idle_max']}
-?? App Switch: {self.settings['app_switch']}
-?? Total Runtime: {self.settings['total_runtime']}
-?? Repeat Screens: {self.settings['repeat_screens']}
+\u23f1 Active Duration: {self.settings['active_min']}-{self.settings['active_max']}
+\u23f8 Pause Duration: {self.settings['idle_min']}-{self.settings['idle_max']}
+\ud83d\udd04 App Switch: {self.settings['app_switch']}
+\ud83d\uddb1 Auto-Click: {self.settings.get('auto_click', 'Default')}
+\u23f1 Total Runtime: {self.settings['total_runtime']}
+\ud83d\udd01 Repeat Screens: {self.settings['repeat_screens']}
+\ud83d\udd11 Shortcut: {self.settings.get('shortcut', 'Ctrl+Shift+P')}
+\u26a0 Force Logout: {self.settings.get('force_logout', 'OFF')}
+\ud83d\udeba Simple Logout: {self.settings.get('simple_logout', 'OFF')}
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -272,18 +283,20 @@ class AutoWebApp:
     DEFAULT_ACTIVE_MAX_SEC = 600
     DEFAULT_IDLE_MIN_SEC = 120
     DEFAULT_IDLE_MAX_SEC = 240
-    DEFAULT_RUNTIME_SEC = 300
-    DEFAULT_APP_SWITCH_SEC = 5
+    DEFAULT_RUNTIME_SEC = 54000        # 900 minutes
+    DEFAULT_APP_SWITCH_SEC = 540       # 9 minutes
+    DEFAULT_AUTO_CLICK_MIN_SEC = 60    # 1 minute
+    DEFAULT_AUTO_CLICK_MAX_SEC = 240   # 4 minutes (STRICT MAX)
     
     def __init__(self):
         """Initialize the main application window."""
         # Create main window
         self.root = tk.Tk()
         self.root.title("AutoWeb - UI Automation Tool")
-        self.root.geometry("550x750")
+        self.root.geometry("600x950")
         self.root.configure(bg=Colors.BACKGROUND)
         self.root.resizable(True, True)
-        self.root.minsize(500, 650)
+        self.root.minsize(550, 800)
         
         # Keep window always on top
         self.root.attributes('-topmost', True)
@@ -297,8 +310,17 @@ class AutoWebApp:
         # Initialize scheduler with callbacks
         self.scheduler = AutomationScheduler(
             on_state_change=self._on_state_change,
-            on_runtime_expired=self._on_runtime_expired
+            on_runtime_expired=self._on_runtime_expired,
+            on_user_activity_detected=self._on_user_activity_external
         )
+        
+        # Force logout handler
+        self.force_logout_handler = ForceLogoutHandler(
+            on_before_logout=self._before_force_logout
+        )
+        
+        # Global pause/resume hotkey (Ctrl+Shift+P)
+        self._pause_resume_hotkey = None
         
         # Track consent
         self.consent_given = False
@@ -310,6 +332,12 @@ class AutoWebApp:
         # Privacy shield (redacts on-screen data)
         self.privacy_mode = tk.BooleanVar(value=True)
 
+        # Force OS logout on user activity
+        self.force_logout_var = tk.BooleanVar(value=False)
+        
+        # Simple logout (app only, not OS)
+        self.simple_logout_var = tk.BooleanVar(value=False)
+
         # Build UI
         self._create_widgets()
         self._apply_privacy_mode()
@@ -319,9 +347,9 @@ class AutoWebApp:
         
         # Center window on screen
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - 550) // 2
-        y = (self.root.winfo_screenheight() - 750) // 2
-        self.root.geometry(f"550x750+{x}+{y}")
+        x = (self.root.winfo_screenwidth() - 600) // 2
+        y = (self.root.winfo_screenheight() - 950) // 2
+        self.root.geometry(f"600x950+{x}+{y}")
 
         # Block screen capture for this window (Windows 10+)
         self._set_window_capture_protection()
@@ -347,6 +375,9 @@ class AutoWebApp:
         self.idle_max_entry.configure(show="")
         self.app_switch_entry.configure(show="")
         self.total_runtime_entry.configure(show="")
+        self.auto_click_min_entry.configure(show="")
+        self.auto_click_max_entry.configure(show="")
+        self.shortcut_entry.configure(show="")
 
         if enabled:
             self.status_label.configure(text="🔒 HIDDEN", fg=Colors.TEXT_DIM)
@@ -438,6 +469,92 @@ class AutoWebApp:
             self.scheduler.stop()
         # Close the application
         self._on_close()
+    
+    def _register_pause_resume_hotkey(self):
+        """Register the configurable pause/resume global hotkey."""
+        shortcut_str = self.shortcut_var.get().strip()
+        result = GlobalHotkey.parse_shortcut(shortcut_str)
+        
+        if result[0] is None:
+            # Invalid shortcut, use default Ctrl+Shift+P
+            self._log_message(f"⚠️ Invalid shortcut '{shortcut_str}', using Ctrl+Shift+P")
+            modifiers = MOD_CTRL | MOD_SHIFT
+            vk_code = VK_MAP['P']
+        else:
+            modifiers, vk_code = result
+        
+        # Create and start the global hotkey
+        self._pause_resume_hotkey = GlobalHotkey(
+            on_toggle=self._on_toggle_pause_resume,
+            modifiers=modifiers,
+            vk_code=vk_code,
+            hotkey_id=GlobalHotkey.PAUSE_RESUME_ID
+        )
+        self._pause_resume_hotkey.start()
+        self._log_message(f"🔑 Pause/Resume hotkey: {self._pause_resume_hotkey.shortcut_name}")
+    
+    def _on_toggle_pause_resume(self):
+        """Handle global pause/resume hotkey press."""
+        def do_toggle():
+            if self.scheduler.is_running():
+                is_now_paused = self.scheduler.toggle_pause()
+                if is_now_paused:
+                    self._log_message("⏸️ Automation PAUSED (hotkey)")
+                    # Show window when paused so user can see status
+                    self.root.deiconify()
+                    self.root.lift()
+                else:
+                    self._log_message("▶️ Automation RESUMED (hotkey)")
+                    # Hide window when resumed
+                    self.root.withdraw()
+        
+        # Schedule on main thread (tkinter thread safety)
+        self.root.after(0, do_toggle)
+    
+    def _on_user_activity_external(self, activity_type):
+        """Handle user activity detection (for logout options)."""
+        if self.force_logout_handler and self.force_logout_handler.enabled:
+            self.force_logout_handler.on_user_activity_detected()
+        elif self.simple_logout_var.get():
+            # Simple logout - close app and lock screen (Win+L)
+            self._log_message("🚪 User activity detected - Simple logout: Closing app and locking screen")
+            self.root.after(0, self._perform_simple_logout)
+    
+    def _before_force_logout(self):
+        """Cleanup before OS force logout - stop all timers, remove hooks."""
+        logger.warning("FORCE LOGOUT: Running pre-logout cleanup...")
+        
+        # Stop all timers and automation
+        if self.scheduler.is_running():
+            self.scheduler.stop()
+        
+        # Unregister all hotkeys
+        self._unregister_hotkey()
+        if self._pause_resume_hotkey:
+            self._pause_resume_hotkey.stop()
+        
+        # Disable force logout to prevent recursion
+        self.force_logout_handler.enabled = False
+        
+        logger.warning("FORCE LOGOUT: Cleanup complete, proceeding with OS logout")
+    
+    def _perform_simple_logout(self):
+        """Perform simple logout - close app and lock Windows screen (Win+L)."""
+        try:
+            logger.warning("SIMPLE LOGOUT: Closing app and locking screen...")
+            
+            # First, close the application cleanly
+            self._on_close()
+            
+            # Then lock the Windows screen (Win+L)
+            # This keeps other apps running but locks the screen
+            ctypes.windll.user32.LockWorkStation()
+            
+        except Exception as e:
+            logger.error(f"Failed to perform simple logout: {e}")
+            # If locking fails, still close the app
+            import sys
+            sys.exit(0)
     
     def _create_widgets(self) -> None:
         """Create all UI widgets."""
@@ -536,7 +653,7 @@ class AutoWebApp:
         
         shortcut_label = tk.Label(
             shortcut_frame,
-            text="🔑 Press Ctrl+Shift+Q to STOP & CLOSE anytime",
+            text="🔑 Ctrl+Shift+P = Pause/Resume  |  Ctrl+Shift+Q = Stop & Close",
             font=Fonts.HEADING,
             bg=Colors.ERROR,
             fg=Colors.BACKGROUND
@@ -774,6 +891,174 @@ class AutoWebApp:
             fg=Colors.TEXT_DIM
         )
         runtime_note.pack(anchor=tk.W)
+        
+        # Fourth row: Auto-click interval (Monitask safe)
+        row4 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row4.pack(fill=tk.X, pady=(0, 10))
+        
+        auto_click_min_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        auto_click_min_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        auto_click_min_label = tk.Label(
+            auto_click_min_frame,
+            text="🖱️ Auto-Click Min (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        auto_click_min_label.pack(anchor=tk.W)
+        
+        self.auto_click_min_var = tk.StringVar(value=self._format_time(self.DEFAULT_AUTO_CLICK_MIN_SEC))
+        self.auto_click_min_entry = tk.Entry(
+            auto_click_min_frame,
+            textvariable=self.auto_click_min_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.auto_click_min_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        auto_click_min_note = tk.Label(
+            auto_click_min_frame,
+            text="Min interval between auto-clicks",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        auto_click_min_note.pack(anchor=tk.W)
+        
+        auto_click_max_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        auto_click_max_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        auto_click_max_label = tk.Label(
+            auto_click_max_frame,
+            text="🖱️ Auto-Click Max (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        auto_click_max_label.pack(anchor=tk.W)
+        
+        self.auto_click_max_var = tk.StringVar(value=self._format_time(self.DEFAULT_AUTO_CLICK_MAX_SEC))
+        self.auto_click_max_entry = tk.Entry(
+            auto_click_max_frame,
+            textvariable=self.auto_click_max_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.auto_click_max_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        auto_click_max_note = tk.Label(
+            auto_click_max_frame,
+            text="Max interval (STRICT: ≤ 4 min)",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        auto_click_max_note.pack(anchor=tk.W)
+        
+        # Fifth row: Global shortcut + Force logout
+        row5 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row5.pack(fill=tk.X, pady=(0, 10))
+        
+        shortcut_config_frame = tk.Frame(row5, bg=Colors.SURFACE)
+        shortcut_config_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        shortcut_config_label = tk.Label(
+            shortcut_config_frame,
+            text="🔑 Pause/Resume Shortcut:",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        shortcut_config_label.pack(anchor=tk.W)
+        
+        self.shortcut_var = tk.StringVar(value="Ctrl+Shift+P")
+        self.shortcut_entry = tk.Entry(
+            shortcut_config_frame,
+            textvariable=self.shortcut_var,
+            font=Fonts.BODY,
+            width=16,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.shortcut_entry.pack(anchor=tk.W, pady=(3, 0))
+        
+        shortcut_config_note = tk.Label(
+            shortcut_config_frame,
+            text="Global hotkey (e.g. Ctrl+Shift+P)",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        shortcut_config_note.pack(anchor=tk.W)
+        
+        # Force logout checkbox
+        force_logout_frame = tk.Frame(row5, bg=Colors.SURFACE)
+        force_logout_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.force_logout_checkbox = tk.Checkbutton(
+            force_logout_frame,
+            text="⚠️ Force OS Logout\non User Activity",
+            variable=self.force_logout_var,
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.ERROR,
+            activebackground=Colors.SURFACE,
+            activeforeground=Colors.ERROR,
+            selectcolor=Colors.SURFACE,
+            justify=tk.LEFT
+        )
+        self.force_logout_checkbox.pack(anchor=tk.W, pady=(10, 0))
+        
+        force_logout_note = tk.Label(
+            force_logout_frame,
+            text="WARNING: Logs out Windows OS!",
+            font=("Segoe UI", 8, "bold"),
+            bg=Colors.SURFACE,
+            fg=Colors.ERROR
+        )
+        force_logout_note.pack(anchor=tk.W)
+        
+        # Add sixth row for simple logout
+        row6 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row6.pack(fill=tk.X, pady=(10, 0))
+        
+        # Simple logout checkbox (app-only close)
+        simple_logout_frame = tk.Frame(row6, bg=Colors.SURFACE)
+        simple_logout_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.simple_logout_checkbox = tk.Checkbutton(
+            simple_logout_frame,
+            text="🚪 Simple Logout\n(Logout Windows + Stop App)",
+            variable=self.simple_logout_var,
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.WARNING,
+            activebackground=Colors.SURFACE,
+            activeforeground=Colors.WARNING,
+            selectcolor=Colors.SURFACE,
+            justify=tk.LEFT
+        )
+        self.simple_logout_checkbox.pack(anchor=tk.W, pady=(10, 0))
+        
+        simple_logout_note = tk.Label(
+            simple_logout_frame,
+            text="Logs out Windows system and stops AutoWeb",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        simple_logout_note.pack(anchor=tk.W)
         
         # Reset defaults button
         reset_frame = tk.Frame(settings_frame, bg=Colors.SURFACE)
@@ -1161,6 +1446,11 @@ class AutoWebApp:
         self.app_switch_entry.configure(state=state)
         self.total_runtime_entry.configure(state=state)
         self.repeat_checkbox.configure(state=state)
+        self.auto_click_min_entry.configure(state=state)
+        self.auto_click_max_entry.configure(state=state)
+        self.shortcut_entry.configure(state=state)
+        self.force_logout_checkbox.configure(state=state)
+        self.simple_logout_checkbox.configure(state=state)
 
     def _reset_defaults(self) -> None:
         """Reset timing inputs to default values."""
@@ -1171,6 +1461,11 @@ class AutoWebApp:
         self.app_switch_var.set(self._format_time(self.DEFAULT_APP_SWITCH_SEC))
         self.total_runtime_var.set(self._format_time(self.DEFAULT_RUNTIME_SEC))
         self.repeat_screens_var.set(True)
+        self.auto_click_min_var.set(self._format_time(self.DEFAULT_AUTO_CLICK_MIN_SEC))
+        self.auto_click_max_var.set(self._format_time(self.DEFAULT_AUTO_CLICK_MAX_SEC))
+        self.shortcut_var.set("Ctrl+Shift+P")
+        self.force_logout_var.set(False)
+        self.simple_logout_var.set(False)
     
     def _on_stop(self) -> None:
         """Handle stop action."""
@@ -1184,11 +1479,19 @@ class AutoWebApp:
             self._log_message("Failed to stop automation")
     
     def _on_runtime_expired(self) -> None:
-        """Handle runtime expiration - auto-close the application."""
+        """Handle runtime expiration - auto-close the application and simple logout if enabled."""
         def close_app():
             self._log_message("⏱️ Runtime expired - closing application...")
-            # Small delay to let the log message appear
-            self.root.after(1000, self._on_close)
+            
+            # Check if simple logout is enabled
+            if self.simple_logout_var.get():
+                self._log_message("🚪 Simple logout enabled - closing app and locking screen...")
+                # Perform simple logout (close app and lock screen)
+                self._perform_simple_logout()
+            else:
+                # Just close the app normally
+                # Small delay to let the log message appear
+                self.root.after(1000, self._on_close)
         
         # Schedule on main thread
         self.root.after(0, close_app)
@@ -1199,8 +1502,16 @@ class AutoWebApp:
         if self.scheduler.is_running():
             self.scheduler.stop()
         
-        # Unregister hotkey
+        # Unregister hotkeys
         self._unregister_hotkey()
+        
+        # Stop pause/resume hotkey
+        if self._pause_resume_hotkey:
+            self._pause_resume_hotkey.stop()
+            self._pause_resume_hotkey = None
+        
+        # Disable force logout
+        self.force_logout_handler.enabled = False
         
         # Destroy window
         self.root.destroy()
@@ -1209,7 +1520,7 @@ class AutoWebApp:
         """Start the application main loop."""
         self._log_message("🚀 AutoWeb ready")
         self._log_message("Configure settings and click SUBMIT")
-        self._log_message("🔑 Ctrl+Shift+Q to stop after starting")
+        self._log_message("🔑 Ctrl+Shift+P = Pause/Resume | Ctrl+Shift+Q = Stop")
         self.root.mainloop()
     
     def _on_submit(self) -> None:
@@ -1282,6 +1593,23 @@ class AutoWebApp:
         total_runtime_display = self._format_time(total_runtime)
         
         # Create settings dict
+        # Parse auto-click settings
+        auto_click_min = _parse_time_to_seconds(
+            self.auto_click_min_var.get(),
+            self.DEFAULT_AUTO_CLICK_MIN_SEC,
+            assume_minutes=True
+        )
+        auto_click_max = _parse_time_to_seconds(
+            self.auto_click_max_var.get(),
+            self.DEFAULT_AUTO_CLICK_MAX_SEC,
+            assume_minutes=True
+        )
+        # Enforce strict 4-minute maximum (240 seconds)
+        auto_click_max = min(auto_click_max, 240)
+        auto_click_min = min(auto_click_min, auto_click_max)
+        auto_click_min_display = self._format_time(auto_click_min)
+        auto_click_max_display = self._format_time(auto_click_max)
+        
         settings = {
             'active_min': active_min_display,
             'active_max': active_max_display,
@@ -1289,7 +1617,11 @@ class AutoWebApp:
             'idle_max': idle_max_display,
             'app_switch': app_switch_display,
             'total_runtime': total_runtime_display,
-            'repeat_screens': "Yes" if self.repeat_screens_var.get() else "No"
+            'repeat_screens': "Yes" if self.repeat_screens_var.get() else "No",
+            'auto_click': f"{auto_click_min_display}-{auto_click_max_display}",
+            'force_logout': "ON \u26a0\ufe0f" if self.force_logout_var.get() else "OFF",
+            'simple_logout': "ON 🚪" if self.simple_logout_var.get() else "OFF",
+            'shortcut': self.shortcut_var.get().strip()
         }
         
         # Show confirmation dialog (no shortcuts shown)
@@ -1303,12 +1635,19 @@ class AutoWebApp:
             f"Active {active_min_display}-{active_max_display}, "
             f"Pause {idle_min_display}-{idle_max_display}, "
             f"App Switch {app_switch_display}, "
+            f"Auto-Click {auto_click_min_display}-{auto_click_max_display}, "
             f"Total {total_runtime_display}, "
             f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
         )
         
         # Register hotkey (Ctrl+Shift+Q to stop)
         self._register_hotkey()
+        
+        # Register pause/resume hotkey (configurable, default Ctrl+Shift+P)
+        self._register_pause_resume_hotkey()
+        
+        # Set up force logout handler
+        self.force_logout_handler.enabled = self.force_logout_var.get()
         
         # Apply settings to scheduler
         # Action interval is fast (3-8 seconds) for scroll, tab switch, mouse move
@@ -1322,6 +1661,8 @@ class AutoWebApp:
         self.scheduler.config.app_switch_interval = app_switch
         self.scheduler.config.total_runtime = total_runtime
         self.scheduler.config.repeat_screens = self.repeat_screens_var.get()
+        self.scheduler.config.auto_click_min = auto_click_min
+        self.scheduler.config.auto_click_max = auto_click_max
         
         # Disable submit button
         self.submit_btn.configure(state=tk.DISABLED)
@@ -1334,10 +1675,14 @@ class AutoWebApp:
                 f"Active {active_min_display}-{active_max_display}, "
                 f"Pause {idle_min_display}-{idle_max_display}, "
                 f"App Switch {app_switch_display}, "
-                f"Total {total_runtime_display}, "
-                f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
+                f"Auto-Click {auto_click_min_display}-{auto_click_max_display}, "
+                f"Total {total_runtime_display}"
             )
             self._log_message("PAUSES on clicks/keyboard only")
+            if self.force_logout_var.get():
+                self._log_message("\u26a0\ufe0f FORCE LOGOUT ON USER ACTIVITY ENABLED")
+            elif self.simple_logout_var.get():
+                self._log_message("🚪 SIMPLE LOGOUT (Windows system) ON USER ACTIVITY ENABLED")
             
             # Make window INVISIBLE
             self.root.withdraw()  # Hide window completely

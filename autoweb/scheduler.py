@@ -110,12 +110,14 @@ class SchedulerConfig:
     idle_max: int = 240             # 4 minutes
     action_interval_min: float = 3.0   # Actions every 3-8 seconds
     action_interval_max: float = 8.0
-    app_switch_interval: float = 30.0  # Switch apps every 30 seconds by default
+    app_switch_interval: float = 540.0  # 9 minutes default
     click_probability: float = 0.10    # Reduced - safe clicks only
     tab_switch_probability: float = 0.20
     scroll_probability: float = 0.25   # Scrolling in VS Code and other apps
     click_phase_max: float = 10.0      # Random delay 0 to this value before clicks
-    total_runtime: Optional[int] = None  # None = run until stopped
+    auto_click_min: int = 60           # Monitask safe: minimum 1 minute between auto-clicks
+    auto_click_max: int = 240          # Monitask safe: maximum 4 minutes (STRICT LIMIT)
+    total_runtime: Optional[int] = 54000  # 900 minutes default
     user_idle_timeout: float = 30.0    # 30 seconds of inactivity before resuming
     repeat_screens: bool = True
 
@@ -141,7 +143,8 @@ class AutomationScheduler:
         self,
         config: Optional[SchedulerConfig] = None,
         on_state_change: Optional[Callable[[SchedulerState], None]] = None,
-        on_runtime_expired: Optional[Callable[[], None]] = None
+        on_runtime_expired: Optional[Callable[[], None]] = None,
+        on_user_activity_detected: Optional[Callable] = None
     ):
         """
         Initialize the automation scheduler.
@@ -150,10 +153,12 @@ class AutomationScheduler:
             config: Configuration object (uses defaults if None)
             on_state_change: Callback function called when state changes
             on_runtime_expired: Callback when total runtime is reached
+            on_user_activity_detected: Callback when user activity is detected (for force logout)
         """
         self.config = config or SchedulerConfig()
         self._on_state_change = on_state_change
         self._on_runtime_expired = on_runtime_expired
+        self._on_user_activity_detected = on_user_activity_detected
         
         # Initialize modules
         self.window_manager = WindowManager()
@@ -211,6 +216,17 @@ class AutomationScheduler:
         
         # Screen cycle tracking (unique screen switching)
         self._screen_seen = set()
+        
+        # Auto-click timer (Monitask safe - never exceed 4 minutes of inactivity)
+        self._auto_click_thread: Optional[threading.Thread] = None
+        self._auto_click_stop_event = threading.Event()
+        self._last_automated_action_time = 0.0
+        
+        # Manual pause (from global hotkey - Ctrl+Shift+P)
+        self._manual_pause_event = threading.Event()
+        
+        # Fiverr/Upwork detection keywords
+        self._fiverr_upwork_keywords = ["fiverr", "upwork"]
         
         logger.info("AutomationScheduler initialized")
     
@@ -277,6 +293,13 @@ class AutomationScheduler:
         )
         
         logger.info(f"User activity detected ({activity_type.name}) - automation paused")
+        
+        # Notify external listener (for force logout, etc.)
+        if self._on_user_activity_detected:
+            try:
+                self._on_user_activity_detected(activity_type)
+            except Exception as e:
+                logger.error(f"Error in user activity external callback: {e}")
     
     def _on_user_idle(self) -> None:
         """
@@ -536,6 +559,20 @@ class AutomationScheduler:
         if self._stop_event.is_set():
             return False
         
+        # Check for manual pause (from global hotkey Ctrl+Shift+P)
+        while self._manual_pause_event.is_set() and not self._stop_event.is_set():
+            if self._check_runtime_expired():
+                return False
+            self._update_state(
+                phase=AutomationPhase.PAUSED,
+                runtime_remaining=self._get_runtime_remaining(),
+                last_action="Paused (Ctrl+Shift+P)"
+            )
+            time.sleep(0.5)
+        
+        if self._stop_event.is_set():
+            return False
+        
         if self._pause_event.is_set():
             # Update idle wait countdown
             idle_remaining = int(self.idle_detector.seconds_until_idle)
@@ -599,6 +636,10 @@ class AutomationScheduler:
             current_app = current_window.title if current_window else ""
             is_code_editor = any(app in current_app for app in ["Visual Studio Code", "Code", "VS Code"])
             supports_tabs = any(app in current_app for app in self._tab_apps)
+            
+            # Fiverr/Upwork special handling - safe interactions only
+            if self._is_fiverr_upwork(current_app):
+                return self._handle_fiverr_upwork_action()
             
             if action == ActionType.MOUSE_MOVE:
                 x, y = self.input_simulator.move_mouse_random()
@@ -897,6 +938,9 @@ class AutomationScheduler:
             
             # Execute action (only if not paused)
             if not self._pause_event.is_set():
+                # First, check for MoniTask windows and handle them
+                self._handle_monitask_windows()
+                
                 if should_switch_app:
                     # Time to switch apps!
                     logger.info(f"APP SWITCH TRIGGERED: {time_since_app_switch:.1f}s elapsed (interval: {self.config.app_switch_interval}s)")
@@ -1037,6 +1081,212 @@ class AutomationScheduler:
             
             logger.info("Automation loop ended")
     
+    # ========================================================================
+    # Auto-Click Timer (Monitask Safe - Never exceed 4 minutes)
+    # ========================================================================
+    
+    def _auto_click_loop(self) -> None:
+        """
+        Monitask-safe auto-click thread.
+        
+        Ensures automated activity never exceeds 4 minutes of inactivity.
+        Runs independently of the main automation loop.
+        After each click, a new random interval is recalculated.
+        
+        Timing rules:
+        - Minimum interval: 1 minute (configurable)
+        - Maximum interval: 4 minutes (STRICT LIMIT, never exceeded)
+        - Randomized between min and max
+        - Paused time does not count toward interval
+        """
+        logger.info("Auto-click thread started (Monitask safe)")
+        
+        while not self._auto_click_stop_event.is_set():
+            # Calculate random interval (STRICT: never exceed 240 seconds = 4 minutes)
+            max_interval = min(self.config.auto_click_max, 240)
+            min_interval = max(self.config.auto_click_min, 10)
+            if min_interval > max_interval:
+                min_interval = max_interval
+            interval = random.uniform(min_interval, max_interval)
+            
+            logger.debug(f"Next auto-click in {interval:.0f}s (range: {min_interval}-{max_interval}s)")
+            
+            # Wait for interval with pause awareness
+            # Only count non-paused time toward the interval
+            accumulated_wait = 0.0
+            last_check = time.time()
+            
+            while accumulated_wait < interval and not self._auto_click_stop_event.is_set():
+                time.sleep(0.5)
+                
+                now = time.time()
+                delta = now - last_check
+                last_check = now
+                
+                # Only count time when NOT paused (manual or user activity)
+                if not self._manual_pause_event.is_set() and not self._pause_event.is_set():
+                    accumulated_wait += delta
+            
+            if self._auto_click_stop_event.is_set():
+                break
+            
+            # Don't click if paused
+            if self._manual_pause_event.is_set() or self._pause_event.is_set():
+                continue
+            
+            # Perform safe click
+            try:
+                self.idle_detector.suppress_activity()
+                x, y = self.input_simulator.safe_click()
+                self._last_automated_action_time = time.time()
+                self._update_state(
+                    last_action=f"Auto-click ({x}, {y}) [Monitask safe, {interval:.0f}s interval]"
+                )
+                logger.info(f"Monitask safe auto-click at ({x}, {y}), interval={interval:.0f}s")
+            except Exception as e:
+                logger.error(f"Auto-click error: {e}")
+            finally:
+                self.idle_detector.restore_activity()
+        
+        logger.info("Auto-click thread stopped")
+    
+    # ========================================================================
+    # Manual Pause / Resume (Global Hotkey)
+    # ========================================================================
+    
+    def pause(self) -> None:
+        """
+        Manually pause automation (from global hotkey).
+        
+        Pausing will:
+        - Stop auto-click timer (via pause-aware wait)
+        - Stop app-switch timer (via pause-aware wait)
+        - Preserve remaining runtime
+        """
+        if not self._state.is_running:
+            return
+        
+        self._manual_pause_event.set()
+        
+        # Record pause start for runtime tracking
+        if self._pause_start is None:
+            self._pause_start = time.time()
+        
+        self._update_state(
+            phase=AutomationPhase.PAUSED,
+            last_action="Paused (manual - Ctrl+Shift+P)"
+        )
+        logger.info("Automation manually paused via hotkey")
+    
+    def resume(self) -> None:
+        """
+        Manually resume automation (from global hotkey).
+        
+        Resuming will:
+        - Continue without resetting counters
+        - Reset app-switch timer from current time
+        - Resume auto-click timer
+        """
+        if not self._state.is_running:
+            return
+        
+        # Calculate accumulated pause time
+        if self._pause_start is not None:
+            self._paused_time += time.time() - self._pause_start
+            self._pause_start = None
+        
+        self._manual_pause_event.clear()
+        
+        # Also clear user activity pause
+        self._pause_event.clear()
+        self._resume_event.set()
+        
+        # Reset app switch timer on resume
+        self._last_app_switch_time = time.time()
+        
+        self._update_state(
+            phase=AutomationPhase.ACTIVE,
+            is_user_active=False,
+            idle_wait_remaining=0,
+            last_action="Resumed (manual - Ctrl+Shift+P)"
+        )
+        logger.info("Automation manually resumed via hotkey")
+    
+    def toggle_pause(self) -> bool:
+        """
+        Toggle between paused and running states.
+        
+        Returns:
+            True if now paused, False if now running
+        """
+        if self._manual_pause_event.is_set():
+            self.resume()
+            return False
+        else:
+            self.pause()
+            return True
+    
+    @property
+    def is_paused(self) -> bool:
+        """Check if automation is manually paused."""
+        return self._manual_pause_event.is_set()
+    
+    # ========================================================================
+    # Fiverr / Upwork Behavior
+    # ========================================================================
+    
+    def _is_fiverr_upwork(self, title: str) -> bool:
+        """Check if window title indicates Fiverr or Upwork."""
+        title_lower = title.lower()
+        return any(kw in title_lower for kw in self._fiverr_upwork_keywords)
+    
+    def _handle_fiverr_upwork_action(self) -> str:
+        """
+        Handle actions for Fiverr/Upwork windows.
+        
+        Performs safe interactions only:
+        - Toggle between Fiverr/Upwork tabs
+        - Safe scrolling (read-only)
+        - Safe clicks in non-interactive areas (title bar, scrollbar, edges)
+        
+        Avoids:
+        - Input fields, text areas
+        - Buttons that cause navigation
+        - Form submissions
+        - Dynamic content areas that change page state
+        """
+        current_window = self.window_manager.get_foreground_window()
+        if not current_window:
+            return "No active Fiverr/Upwork window"
+        
+        # Weight actions: scrolling most common (safe), then tab toggle, then safe click
+        action = random.choices(
+            ["scroll", "toggle_tab", "safe_click", "scroll"],
+            weights=[0.35, 0.25, 0.15, 0.25],
+            k=1
+        )[0]
+        
+        if action == "toggle_tab":
+            # Switch between Fiverr and Upwork tabs using Ctrl+Tab
+            self.input_simulator.shortcut_ctrl_tab()
+            time.sleep(0.3)
+            new_window = self.window_manager.get_foreground_window()
+            new_title = new_window.title[:30] if new_window else "Unknown"
+            return f"Fiverr/Upwork tab toggle → {new_title}..."
+        
+        elif action == "scroll":
+            # Safe scroll (read-only, no content modification)
+            scroll_desc = self.input_simulator.scroll_sequence()
+            return f"Fiverr/Upwork safe scroll: {scroll_desc}"
+        
+        elif action == "safe_click":
+            # Click ONLY on safe areas (edges, scrollbar, title bar)
+            # InputSimulator.safe_click() avoids interactive areas
+            x, y = self.input_simulator.safe_click()
+            return f"Fiverr/Upwork safe click at ({x}, {y})"
+        
+        return "Fiverr/Upwork idle"
+    
     def start(self) -> bool:
         """
         Start the automation scheduler.
@@ -1080,6 +1330,18 @@ class AutomationScheduler:
         # Start idle detector
         self.idle_detector.start()
         
+        # Clear manual pause
+        self._manual_pause_event.clear()
+        
+        # Start auto-click thread (Monitask safe - ensures activity within 4 min)
+        self._auto_click_stop_event.clear()
+        self._auto_click_thread = threading.Thread(
+            target=self._auto_click_loop,
+            name="AutoClickThread",
+            daemon=True
+        )
+        self._auto_click_thread.start()
+        
         # Start automation thread
         self._thread = threading.Thread(
             target=self._automation_loop,
@@ -1112,6 +1374,12 @@ class AutomationScheduler:
         self._stop_event.set()
         self._pause_event.clear()
         self._resume_event.set()
+        self._manual_pause_event.clear()
+        
+        # Stop auto-click thread
+        self._auto_click_stop_event.set()
+        if self._auto_click_thread and self._auto_click_thread.is_alive():
+            self._auto_click_thread.join(timeout=2.0)
         
         # Stop idle detector
         self.idle_detector.stop()
@@ -1131,6 +1399,56 @@ class AutomationScheduler:
         
         logger.info("Scheduler stopped")
         return True
+    
+    def _handle_monitask_windows(self) -> bool:
+        """
+        Check for and handle MoniTask windows.
+        
+        Returns:
+            True if any MoniTask windows were handled, False otherwise
+        """
+        try:
+            monitask_windows = self.window_manager.find_monitask_windows()
+            
+            if not monitask_windows:
+                return False
+            
+            for window in monitask_windows:
+                logger.info(f"Found MoniTask window: '{window.title}' (handle: {window.hwnd})")
+                
+                # Check if this is the idle confirmation dialog
+                title_lower = window.title.lower()
+                if any(keyword in title_lower for keyword in [
+                    'confirmation', 'you\'ve been idle', 'do you wish to pause'
+                ]):
+                    # Try to click "Continue Timing" button
+                    logger.info("Attempting to click 'Continue Timing' on MoniTask idle dialog")
+                    if self.window_manager.click_button_by_text(window.hwnd, "Continue Timing"):
+                        self._update_state(last_action="MoniTask: Clicked 'Continue Timing'")
+                        logger.info("Successfully clicked 'Continue Timing' button")
+                    else:
+                        # Try alternative button texts
+                        for button_text in ["Continue", "Resume", "OK"]:
+                            if self.window_manager.click_button_by_text(window.hwnd, button_text):
+                                self._update_state(last_action=f"MoniTask: Clicked '{button_text}'")
+                                logger.info(f"Successfully clicked '{button_text}' button")
+                                break
+                        else:
+                            logger.warning("Could not find 'Continue Timing' button")
+                else:
+                    # For other MoniTask windows, minimize them
+                    logger.info(f"Minimizing MoniTask window: '{window.title}'")
+                    if self.window_manager.minimize_window(window.hwnd):
+                        self._update_state(last_action=f"MoniTask: Minimized '{window.title}'")
+                        logger.info(f"Successfully minimized MoniTask window")
+                    else:
+                        logger.warning(f"Failed to minimize MoniTask window: '{window.title}'")
+            
+            return len(monitask_windows) > 0
+            
+        except Exception as e:
+            logger.error(f"Error handling MoniTask windows: {e}")
+            return False
     
     def is_running(self) -> bool:
         """Check if the scheduler is currently running."""

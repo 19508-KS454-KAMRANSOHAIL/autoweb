@@ -14,4 +14,6 @@ from .idle_detector_safe import IdleDetector, ActivityType, IdleState  # SAFE po
 from .window_manager import WindowManager, WindowInfo
 from .input_simulator import InputSimulator
 from .scheduler import AutomationScheduler, SchedulerState, SchedulerConfig, AutomationPhase
+from .global_hotkey import GlobalHotkey
+from .force_logout import ForceLogoutHandler
 from .ui import AutoWebApp
