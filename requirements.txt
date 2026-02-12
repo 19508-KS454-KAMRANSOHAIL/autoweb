@@ -1,9 +1,13 @@
 # AutoWeb Requirements
 # ====================
 # 
-# This application uses only Python standard library modules.
-# No external dependencies are required.
-#
+# Core Dependencies:
+# - psutil: Required for process monitoring and protection system
+# - pywin32: Required for Windows API access (power management, window handling)
+
+psutil>=5.8.0
+pywin32>=227
+
 # Standard Library Modules Used:
 # - tkinter (GUI framework, included with Python on Windows)
 # - ctypes (Windows API access, included with Python)
@@ -16,9 +20,11 @@
 # - typing (type hints)
 # - datetime (date/time handling)
 # - sys (system functions)
+# - signal (signal handling)
+# - atexit (exit handlers)
+# - subprocess (process management)
+# - tempfile (temporary files)
 #
 # Note: Make sure you have Python 3.8 or higher installed.
 # On Windows, Python typically includes tkinter by default.
 # If tkinter is missing, reinstall Python with the "tcl/tk and IDLE" option.
-
-# No pip packages required!

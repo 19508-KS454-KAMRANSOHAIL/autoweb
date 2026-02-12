@@ -40,6 +40,14 @@ The application simulates user input at the OS level. Please ensure you have pro
 - **Auto-Close**: Application automatically closes when runtime expires
 - **Visual Countdown**: Real-time display of remaining runtime
 
+### Application Protection
+
+- **Termination Protection**: System automatically locks (Win+L) if application is terminated unexpectedly
+- **Signal Handling**: Captures Ctrl+C, terminal closure, process termination, etc.
+- **Watchdog Process**: Secondary process monitors main application and triggers lock on unexpected termination
+- **Emergency Bypass**: Create `emergency_disable.txt` file to disable protection during development
+- **Clean Shutdown**: Normal app closure through UI disables protection safely
+
 ### Window Filtering
 
 - **Visible Windows Only**: Switches only between currently active and visible applications

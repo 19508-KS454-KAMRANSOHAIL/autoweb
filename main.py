@@ -113,7 +113,7 @@ def main():
     """
     Main entry point for the AutoWeb application.
     
-    Performs platform and dependency checks, then launches the UI.
+    Performs platform and dependency checks, enables protection, then launches the UI.
     """
     print("=" * 60)
     print("  🤖 AutoWeb - UI Automation & Accessibility Testing Tool")
@@ -133,6 +133,19 @@ def main():
     print("✓ Platform: Windows")
     print("✓ Dependencies: OK")
     print()
+    
+    # Enable application protection
+    protection = None
+    try:
+        from autoweb.protection import enable_application_protection, disable_application_protection
+        protection = enable_application_protection("emergency_disable.txt")
+        print("🔒 Security: Protection enabled (system locks if app terminates)")
+        print("   Create 'emergency_disable.txt' file to disable protection during development")
+    except Exception as e:
+        logger.warning(f"Could not enable application protection: {e}")
+        print("⚠️  Security: Protection not available")
+    
+    print()
     print("Starting application...")
     print("-" * 60)
     print()
@@ -143,19 +156,33 @@ def main():
         # Import and run the UI
         from autoweb.ui import AutoWebApp
         
-        app = AutoWebApp()
+        app = AutoWebApp(protection=protection)
+        
+        # Register cleanup function for protection
+        if protection:
+            protection.add_cleanup_function(lambda: logger.info("Cleaning up before protection trigger"))
+        
         app.run()
         
     except ImportError as e:
         logger.error(f"Failed to import application modules: {e}")
         print(f"❌ Error: Failed to load application: {e}")
         print("   Make sure all application files are present.")
+        if protection:
+            disable_application_protection()
         sys.exit(1)
         
     except Exception as e:
         logger.exception(f"Application error: {e}")
         print(f"❌ Error: {e}")
+        if protection:
+            disable_application_protection()
         sys.exit(1)
+    
+    # Normal shutdown - disable protection cleanly
+    if protection:
+        logger.info("Normal shutdown - disabling protection")
+        disable_application_protection()
     
     logger.info("AutoWeb application closed")
     print()

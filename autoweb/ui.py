@@ -288,8 +288,11 @@ class AutoWebApp:
     DEFAULT_AUTO_CLICK_MIN_SEC = 60    # 1 minute
     DEFAULT_AUTO_CLICK_MAX_SEC = 240   # 4 minutes (STRICT MAX)
     
-    def __init__(self):
+    def __init__(self, protection=None):
         """Initialize the main application window."""
+        # Store protection object
+        self.protection = protection
+        
         # Create main window
         self.root = tk.Tk()
         self.root.title("AutoWeb - UI Automation Tool")
@@ -1507,6 +1510,14 @@ class AutoWebApp:
         # Disable force logout
         self.force_logout_handler.enabled = False
         
+        # Disable application protection for clean shutdown
+        try:
+            from .protection import disable_application_protection
+            disable_application_protection()
+            logger.info("Application protection disabled for clean shutdown")
+        except Exception as e:
+            logger.warning(f"Could not disable application protection: {e}")
+        
         # Destroy window
         self.root.destroy()
     
@@ -1515,7 +1526,29 @@ class AutoWebApp:
         self._log_message("🚀 AutoWeb ready")
         self._log_message("Configure settings and click SUBMIT")
         self._log_message("🔑 Ctrl+Shift+P = Pause/Resume | Ctrl+Shift+Q = Stop")
+        
+        # Start checking for shutdown events if protection is available
+        if self.protection:
+            self._check_shutdown_events()
+            
         self.root.mainloop()
+    
+    def _check_shutdown_events(self):
+        """Check for system shutdown events and handle them gracefully."""
+        if self.protection and self.protection.should_shutdown:
+            reason = self.protection.shutdown_reason or "System event"
+            self._log_message(f"🛑 {reason} detected - stopping application")
+            
+            # Stop any running automation
+            if hasattr(self, 'scheduler') and self.scheduler:
+                self.scheduler.stop()
+            
+            # Close the application
+            self.root.quit()
+            return
+        
+        # Schedule next check
+        self.root.after(500, self._check_shutdown_events)  # Check every 500ms
     
     def _on_submit(self) -> None:
         """Handle SUBMIT button click - show confirmation dialog."""
