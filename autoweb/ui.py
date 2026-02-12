@@ -500,12 +500,11 @@ class AutoWebApp:
                 is_now_paused = self.scheduler.toggle_pause()
                 if is_now_paused:
                     self._log_message("⏸️ Automation PAUSED (hotkey)")
-                    # Show window when paused so user can see status
-                    self.root.deiconify()
-                    self.root.lift()
+                    # Hide window when paused
+                    self.root.withdraw()
                 else:
                     self._log_message("▶️ Automation RESUMED (hotkey)")
-                    # Hide window when resumed
+                    # Also hide window when resumed
                     self.root.withdraw()
         
         # Schedule on main thread (tkinter thread safety)
@@ -1479,19 +1478,14 @@ class AutoWebApp:
             self._log_message("Failed to stop automation")
     
     def _on_runtime_expired(self) -> None:
-        """Handle runtime expiration - auto-close the application and simple logout if enabled."""
+        """Handle runtime expiration - auto-close the application and perform Win+L logout."""
         def close_app():
-            self._log_message("⏱️ Runtime expired - closing application...")
+            self._log_message("⏱️ Runtime expired - closing application and locking screen...")
             
-            # Check if simple logout is enabled
-            if self.simple_logout_var.get():
-                self._log_message("🚪 Simple logout enabled - closing app and locking screen...")
-                # Perform simple logout (close app and lock screen)
-                self._perform_simple_logout()
-            else:
-                # Just close the app normally
-                # Small delay to let the log message appear
-                self.root.after(1000, self._on_close)
+            # Always perform Win+L logout when runtime expires
+            self._log_message("🚪 Total runtime complete - performing system logout (Win+L)...")
+            # Perform simple logout (close app and lock screen)
+            self._perform_simple_logout()
         
         # Schedule on main thread
         self.root.after(0, close_app)
