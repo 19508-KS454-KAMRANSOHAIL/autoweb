@@ -334,53 +334,75 @@ class InputSimulator:
         """
         Move the mouse to a random position on screen.
         
-        Generates random coordinates within safe screen bounds
-        (avoiding extreme edges).
+        Generates random coordinates within safe screen bounds,
+        avoiding UI elements like sidebars, taskbars, and icons.
+        
+        AVOIDS:
+        - Left 70px (VS Code sidebar icons)
+        - Right 70px (chat panels, window controls)
+        - Bottom 60px (taskbar)
+        - Top 40px (title bar, menus)
         
         Returns:
             Tuple of (x, y) where mouse was moved to
         """
-        # Keep 50px margin from edges
-        margin = 50
-        x = random.randint(margin, self.screen_width - margin)
-        y = random.randint(margin, self.screen_height - margin)
+        # Define safe zone avoiding dangerous UI areas
+        left_margin = 80    # Avoid sidebar icons
+        right_margin = 80   # Avoid chat panels
+        top_margin = 50     # Avoid title bar
+        bottom_margin = 70  # Avoid taskbar
+        
+        x = random.randint(left_margin, self.screen_width - right_margin)
+        y = random.randint(top_margin, self.screen_height - bottom_margin)
         
         self.move_mouse_smooth(x, y, duration=0.3, steps=10)
-        logger.info(f"Random mouse movement to ({x}, {y})")
+        logger.info(f"Random mouse movement to safe zone ({x}, {y})")
         return (x, y)
     
     def safe_click(self) -> Tuple[int, int]:
         """
-        Perform a SAFE click that won't affect code or content.
+        Perform a SAFE click that won't affect code, content, or UI elements.
         
-        Safe areas include:
-        - Top edge (title bar area) - MOST SAFE
-        - Left edge (sidebar area)
-        - Right edge (scrollbar area)
+        SAFE AREAS (neutral zones with zero functional impact):
+        - Window title bar area (very top, avoiding close/min/max buttons)
+        - Right scrollbar area (avoiding content)
         
-        AVOIDS:
-        - Bottom right corner (calendar/system tray)
-        - Bottom left corner (Start button)
-        - Entire taskbar area
+        STRICTLY AVOIDED AREAS:
+        - VS Code sidebar icons (Search, Explorer, GitLens, Extensions, etc.) - left 50px
+        - Copilot/chat panels - right side areas
+        - Bottom taskbar area
+        - Start button area
+        - System tray
+        - Any interactive UI elements
         
         Returns:
             Tuple of (x, y) where the safe click was performed
         """
-        # Define safe click zones - AVOID TASKBAR ENTIRELY
+        # Calculate safe zones that have ZERO functional impact
+        # Avoid: left 60px (sidebar icons), right 60px (chat panels), bottom 60px (taskbar)
+        # Focus on: title bar center area only
+        
         safe_zones = [
-            # Top edge (title bar area) - MOST SAFE - multiple options
-            (random.randint(150, self.screen_width - 150), random.randint(8, 35)),
+            # Title bar center area ONLY - most neutral zone
+            # Avoid close/minimize/maximize buttons (right side of title bar)
+            # Avoid VS Code menu (left side of title bar)
             (random.randint(200, self.screen_width - 200), random.randint(10, 30)),
-            (random.randint(100, self.screen_width - 100), random.randint(5, 25)),
-            # Left edge (sidebar area) - safe, away from taskbar
-            (random.randint(5, 40), random.randint(150, self.screen_height - 150)),
-            # Right edge (scrollbar area) - safe, well above taskbar
-            (random.randint(self.screen_width - 25, self.screen_width - 5), 
-             random.randint(150, self.screen_height - 200)),
+            (random.randint(250, self.screen_width - 250), random.randint(8, 28)),
+            (random.randint(300, self.screen_width - 300), random.randint(12, 32)),
+            # Very center of screen - typically safe in most apps
+            (self.screen_width // 2 + random.randint(-100, 100), self.screen_height // 2 + random.randint(-50, 50)),
         ]
         
         # Choose a random safe zone
         x, y = random.choice(safe_zones)
+        
+        # Clamp to safe bounds - avoid dangerous zones
+        # Left: avoid sidebar icons (0-60px)
+        x = max(70, x)
+        # Right: avoid chat panels and window controls (last 80px)
+        x = min(self.screen_width - 80, x)
+        # Bottom: avoid taskbar (last 50px)
+        y = min(self.screen_height - 60, y)
         
         # Move to the safe position
         self.move_mouse_smooth(x, y, duration=0.2, steps=8)
@@ -388,8 +410,48 @@ class InputSimulator:
         
         # Perform the click
         self.click("left")
-        logger.info(f"Safe click at edge position ({x}, {y})")
+        logger.info(f"Safe click at neutral position ({x}, {y})")
         return (x, y)
+    
+    def safe_key_press(self) -> str:
+        """
+        Perform a SAFE key press that has no visible or functional effect.
+        
+        Safe keys include:
+        - Shift key alone (no effect without other keys)
+        - Ctrl key alone (no effect without other keys)
+        - Scroll Lock (rarely used, no visible effect)
+        - Right Shift (no effect alone)
+        
+        Keys that are NEVER used:
+        - Any letter, number, or symbol keys
+        - Enter, Tab, Space, Backspace, Delete
+        - Arrow keys (can navigate)
+        - F keys (can trigger actions)
+        - Windows key (opens Start menu)
+        - Alt key (can activate menus)
+        - Escape (can close dialogs)
+        
+        Returns:
+            Description of the key pressed
+        """
+        # Safe keys that have no visible effect when pressed alone
+        safe_keys = [
+            (VirtualKey.VK_SHIFT, "Shift"),
+            (VirtualKey.VK_CONTROL, "Ctrl"),
+            (0x91, "Scroll Lock"),  # VK_SCROLL
+            (0xA1, "Right Shift"),  # VK_RSHIFT
+            (0xA3, "Right Ctrl"),   # VK_RCONTROL
+        ]
+        
+        # Choose a random safe key
+        vk_code, key_name = random.choice(safe_keys)
+        
+        # Press and release the key
+        self.key_press(vk_code)
+        
+        logger.info(f"Safe key press: {key_name}")
+        return key_name
     
     def scroll(self, direction: str = "down", amount: int = 3) -> bool:
         """

@@ -62,6 +62,7 @@ class ActionType(Enum):
     APP_SWITCH = auto()
     TAB_SWITCH = auto()
     SCROLL = auto()       # Scroll action for VS Code and other apps
+    SAFE_KEY_PRESS = auto()  # Safe key press - no visible effect
 
 
 @dataclass
@@ -103,6 +104,8 @@ class SchedulerConfig:
         total_runtime: Total runtime before auto-close in seconds (None = run until stopped)
         user_idle_timeout: Seconds of inactivity before resuming (default: 120s)
         repeat_screens: Whether to allow repeating screen views within a cycle
+        auto_lock_enabled: Whether to enable auto lock (Win+L) after monitoring time
+        auto_lock_monitor_time: Seconds to wait before starting user activity monitoring for auto lock
     """
     active_min: int = 300           # 5 minutes
     active_max: int = 600           # 10 minutes
@@ -114,12 +117,13 @@ class SchedulerConfig:
     click_probability: float = 0.10    # Reduced - safe clicks only
     tab_switch_probability: float = 0.20
     scroll_probability: float = 0.25   # Scrolling in VS Code and other apps
+    key_press_probability: float = 0.15  # Safe key press simulation
     click_phase_max: float = 10.0      # Random delay 0 to this value before clicks
-    auto_click_min: int = 60           # Monitask safe: minimum 1 minute between auto-clicks
-    auto_click_max: int = 240          # Monitask safe: maximum 4 minutes (STRICT LIMIT)
     total_runtime: Optional[int] = 54000  # 900 minutes default
     user_idle_timeout: float = 30.0    # 30 seconds of inactivity before resuming
     repeat_screens: bool = True
+    auto_lock_enabled: bool = False    # Conditional auto lock feature
+    auto_lock_monitor_time: int = 300  # 5 minutes before monitoring starts
 
 
 class AutomationScheduler:
@@ -188,10 +192,11 @@ class AutomationScheduler:
         
         # Action weights for random selection (NO app switch - it's on separate timer)
         self._action_weights = {
-            ActionType.MOUSE_MOVE: 0.30,       
+            ActionType.MOUSE_MOVE: 0.20,       
             ActionType.MOUSE_CLICK: self.config.click_probability,  # Safe clicks
             ActionType.TAB_SWITCH: self.config.tab_switch_probability,  # Switch tabs
             ActionType.SCROLL: self.config.scroll_probability,  # Scrolling
+            ActionType.SAFE_KEY_PRESS: self.config.key_press_probability,  # Safe key presses
         }
         
         # List of apps where scrolling is enabled
@@ -217,10 +222,10 @@ class AutomationScheduler:
         # Screen cycle tracking (unique screen switching)
         self._screen_seen = set()
         
-        # Auto-click timer (Monitask safe - never exceed 4 minutes of inactivity)
-        self._auto_click_thread: Optional[threading.Thread] = None
-        self._auto_click_stop_event = threading.Event()
-        self._last_automated_action_time = 0.0
+        # Auto lock monitoring (conditional Win+L after monitoring time)
+        self._auto_lock_thread: Optional[threading.Thread] = None
+        self._auto_lock_stop_event = threading.Event()
+        self._auto_lock_monitoring_active = False
         
         # Manual pause (from global hotkey - Ctrl+Shift+P)
         self._manual_pause_event = threading.Event()
@@ -269,11 +274,18 @@ class AutomationScheduler:
         Callback when user activity is detected.
         
         Immediately pauses automation and switches to WAITING_IDLE state.
+        If auto lock monitoring is active, triggers Win+L immediately.
         
         Args:
             activity_type: Type of activity detected
         """
         if not self._state.is_running:
+            return
+        
+        # Check if auto lock monitoring is active - if so, trigger lock
+        if self.config.auto_lock_enabled and self._auto_lock_monitoring_active:
+            logger.warning(f"🔐 User activity detected ({activity_type.name}) during auto lock monitoring - LOCKING")
+            self._trigger_auto_lock()
             return
         
         # Set pause flag
@@ -706,6 +718,11 @@ class AutomationScheduler:
                     x, y = self.input_simulator.move_mouse_random()
                     return f"Mouse moved to ({x}, {y})"
             
+            elif action == ActionType.SAFE_KEY_PRESS:
+                # Safe key press - no visible effect
+                key_desc = self.input_simulator.safe_key_press()
+                return f"Safe key press: {key_desc}"
+            
             return "Unknown action"
             
         except Exception as e:
@@ -1082,73 +1099,56 @@ class AutomationScheduler:
             logger.info("Automation loop ended")
     
     # ========================================================================
-    # Auto-Click Timer (Monitask Safe - Never exceed 4 minutes)
+    # Auto Lock Monitoring (Conditional Win+L after monitoring time)
     # ========================================================================
     
-    def _auto_click_loop(self) -> None:
+    def _auto_lock_loop(self) -> None:
         """
-        Monitask-safe auto-click thread.
+        Auto lock monitoring thread.
         
-        Ensures automated activity never exceeds 4 minutes of inactivity.
-        Runs independently of the main automation loop.
-        After each click, a new random interval is recalculated.
+        Waits for the configured monitoring start time, then monitors for
+        user activity. If activity is detected after monitoring starts,
+        immediately triggers Win+L (system lock).
         
-        Timing rules:
-        - Minimum interval: 1 minute (configurable)
-        - Maximum interval: 4 minutes (STRICT LIMIT, never exceeded)
-        - Randomized between min and max
-        - Paused time does not count toward interval
+        Behavior:
+        - Wait for auto_lock_monitor_time after app starts
+        - After threshold, start monitoring mouse/keyboard activity
+        - If activity detected after monitoring starts -> Win+L
+        - Activity before monitoring time is ignored
+        - Only works when auto_lock_enabled is True
         """
-        logger.info("Auto-click thread started (Monitask safe)")
+        logger.info(f"Auto lock thread started - monitoring begins in {self.config.auto_lock_monitor_time}s")
         
-        while not self._auto_click_stop_event.is_set():
-            # Calculate random interval (STRICT: never exceed 240 seconds = 4 minutes)
-            max_interval = min(self.config.auto_click_max, 240)
-            min_interval = max(self.config.auto_click_min, 10)
-            if min_interval > max_interval:
-                min_interval = max_interval
-            interval = random.uniform(min_interval, max_interval)
-            
-            logger.debug(f"Next auto-click in {interval:.0f}s (range: {min_interval}-{max_interval}s)")
-            
-            # Wait for interval with pause awareness
-            # Only count non-paused time toward the interval
-            accumulated_wait = 0.0
-            last_check = time.time()
-            
-            while accumulated_wait < interval and not self._auto_click_stop_event.is_set():
-                time.sleep(0.5)
-                
-                now = time.time()
-                delta = now - last_check
-                last_check = now
-                
-                # Only count time when NOT paused (manual or user activity)
-                if not self._manual_pause_event.is_set() and not self._pause_event.is_set():
-                    accumulated_wait += delta
-            
-            if self._auto_click_stop_event.is_set():
-                break
-            
-            # Don't click if paused
-            if self._manual_pause_event.is_set() or self._pause_event.is_set():
-                continue
-            
-            # Perform safe click
-            try:
-                self.idle_detector.suppress_activity()
-                x, y = self.input_simulator.safe_click()
-                self._last_automated_action_time = time.time()
-                self._update_state(
-                    last_action=f"Auto-click ({x}, {y}) [Monitask safe, {interval:.0f}s interval]"
-                )
-                logger.info(f"Monitask safe auto-click at ({x}, {y}), interval={interval:.0f}s")
-            except Exception as e:
-                logger.error(f"Auto-click error: {e}")
-            finally:
-                self.idle_detector.restore_activity()
+        # Wait for monitoring start time
+        waited = 0.0
+        while waited < self.config.auto_lock_monitor_time and not self._auto_lock_stop_event.is_set():
+            time.sleep(0.5)
+            waited += 0.5
         
-        logger.info("Auto-click thread stopped")
+        if self._auto_lock_stop_event.is_set():
+            logger.info("Auto lock thread stopped before monitoring started")
+            return
+        
+        # Start monitoring
+        self._auto_lock_monitoring_active = True
+        logger.warning(f"🔐 AUTO LOCK MONITORING NOW ACTIVE - System will lock on user activity")
+        self._update_state(last_action="🔐 Auto lock monitoring active")
+        
+        # Continue running until stop event - actual lock happens in _on_user_activity
+        while not self._auto_lock_stop_event.is_set():
+            time.sleep(0.5)
+        
+        self._auto_lock_monitoring_active = False
+        logger.info("Auto lock thread stopped")
+    
+    def _trigger_auto_lock(self) -> None:
+        """Trigger system lock (Win+L) for auto lock feature."""
+        try:
+            logger.warning("🔐 AUTO LOCK TRIGGERED - Locking system")
+            import ctypes
+            ctypes.windll.user32.LockWorkStation()
+        except Exception as e:
+            logger.error(f"Failed to trigger auto lock: {e}")
     
     # ========================================================================
     # Manual Pause / Resume (Global Hotkey)
@@ -1159,8 +1159,6 @@ class AutomationScheduler:
         Manually pause automation (from global hotkey).
         
         Pausing will:
-        - Stop auto-click timer (via pause-aware wait)
-        - Stop app-switch timer (via pause-aware wait)
         - Preserve remaining runtime
         """
         if not self._state.is_running:
@@ -1333,14 +1331,16 @@ class AutomationScheduler:
         # Clear manual pause
         self._manual_pause_event.clear()
         
-        # Start auto-click thread (Monitask safe - ensures activity within 4 min)
-        self._auto_click_stop_event.clear()
-        self._auto_click_thread = threading.Thread(
-            target=self._auto_click_loop,
-            name="AutoClickThread",
-            daemon=True
-        )
-        self._auto_click_thread.start()
+        # Start auto lock thread if enabled
+        if self.config.auto_lock_enabled:
+            self._auto_lock_stop_event.clear()
+            self._auto_lock_monitoring_active = False
+            self._auto_lock_thread = threading.Thread(
+                target=self._auto_lock_loop,
+                name="AutoLockThread",
+                daemon=True
+            )
+            self._auto_lock_thread.start()
         
         # Start automation thread
         self._thread = threading.Thread(
@@ -1376,10 +1376,11 @@ class AutomationScheduler:
         self._resume_event.set()
         self._manual_pause_event.clear()
         
-        # Stop auto-click thread
-        self._auto_click_stop_event.set()
-        if self._auto_click_thread and self._auto_click_thread.is_alive():
-            self._auto_click_thread.join(timeout=2.0)
+        # Stop auto lock thread
+        self._auto_lock_stop_event.set()
+        self._auto_lock_monitoring_active = False
+        if self._auto_lock_thread and self._auto_lock_thread.is_alive():
+            self._auto_lock_thread.join(timeout=2.0)
         
         # Stop idle detector
         self.idle_detector.stop()

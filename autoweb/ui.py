@@ -175,12 +175,12 @@ class ConsentDialog:
 \u23f1 Active Duration: Hidden
 \u23f8 Pause Duration: Hidden
 \ud83d\udd04 App Switch: Hidden
-\ud83d\uddb1 Auto-Click: Hidden
 \u23f1 Total Runtime: Hidden
 \ud83d\udd01 Repeat Screens: Hidden
 \ud83d\udd11 Shortcut: Hidden
 \u26a0 Force Logout: Hidden
 \ud83d\udeba Simple Logout: Hidden
+\ud83d\udd12 Auto Lock: Hidden
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -191,12 +191,12 @@ Resumes after 30 seconds of inactivity.
 \u23f1 Active Duration: {self.settings['active_min']}-{self.settings['active_max']}
 \u23f8 Pause Duration: {self.settings['idle_min']}-{self.settings['idle_max']}
 \ud83d\udd04 App Switch: {self.settings['app_switch']}
-\ud83d\uddb1 Auto-Click: {self.settings.get('auto_click', 'Default')}
 \u23f1 Total Runtime: {self.settings['total_runtime']}
 \ud83d\udd01 Repeat Screens: {self.settings['repeat_screens']}
 \ud83d\udd11 Shortcut: {self.settings.get('shortcut', 'Ctrl+Shift+P')}
 \u26a0 Force Logout: {self.settings.get('force_logout', 'OFF')}
 \ud83d\udeba Simple Logout: {self.settings.get('simple_logout', 'OFF')}
+\ud83d\udd12 Auto Lock: {self.settings.get('auto_lock', 'OFF')}
 
 The app will PAUSE on mouse clicks or keyboard presses.
 Mouse movement is ignored.
@@ -285,8 +285,7 @@ class AutoWebApp:
     DEFAULT_IDLE_MAX_SEC = 240
     DEFAULT_RUNTIME_SEC = 54000        # 900 minutes
     DEFAULT_APP_SWITCH_SEC = 540       # 9 minutes
-    DEFAULT_AUTO_CLICK_MIN_SEC = 60    # 1 minute
-    DEFAULT_AUTO_CLICK_MAX_SEC = 240   # 4 minutes (STRICT MAX)
+    DEFAULT_AUTO_LOCK_MONITOR_SEC = 300  # 5 minutes monitoring start time
     
     def __init__(self, protection=None):
         """Initialize the main application window."""
@@ -378,9 +377,8 @@ class AutoWebApp:
         self.idle_max_entry.configure(show="")
         self.app_switch_entry.configure(show="")
         self.total_runtime_entry.configure(show="")
-        self.auto_click_min_entry.configure(show="")
-        self.auto_click_max_entry.configure(show="")
         self.shortcut_entry.configure(show="")
+        self.auto_lock_monitor_entry.configure(show="")
 
         if enabled:
             self.status_label.configure(text="🔒 HIDDEN", fg=Colors.TEXT_DIM)
@@ -512,6 +510,13 @@ class AutoWebApp:
         
         # Schedule on main thread (tkinter thread safety)
         self.root.after(0, do_toggle)
+    
+    def _on_auto_lock_toggle(self):
+        """Handle auto lock checkbox toggle - enable/disable monitoring time input."""
+        if self.auto_lock_var.get():
+            self.auto_lock_monitor_entry.configure(state=tk.NORMAL)
+        else:
+            self.auto_lock_monitor_entry.configure(state=tk.DISABLED)
     
     def _on_user_activity_external(self, activity_type):
         """Handle user activity detection (for logout options)."""
@@ -894,77 +899,74 @@ class AutoWebApp:
         )
         runtime_note.pack(anchor=tk.W)
         
-        # Fourth row: Auto-click interval (Monitask safe)
+        # Fourth row: Auto Lock feature (Conditional Win+L after monitoring time)
         row4 = tk.Frame(settings_frame, bg=Colors.SURFACE)
         row4.pack(fill=tk.X, pady=(0, 10))
         
-        auto_click_min_frame = tk.Frame(row4, bg=Colors.SURFACE)
-        auto_click_min_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        # Auto Lock checkbox
+        auto_lock_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        auto_lock_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        auto_click_min_label = tk.Label(
-            auto_click_min_frame,
-            text="🖱️ Auto-Click Min (mm:ss):",
+        self.auto_lock_var = tk.BooleanVar(value=False)
+        self.auto_lock_checkbox = tk.Checkbutton(
+            auto_lock_frame,
+            text="🔐 Enable Auto Lock After Monitoring",
+            variable=self.auto_lock_var,
+            command=self._on_auto_lock_toggle,
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.WARNING,
+            activebackground=Colors.SURFACE,
+            activeforeground=Colors.WARNING,
+            selectcolor=Colors.SURFACE,
+            justify=tk.LEFT
+        )
+        self.auto_lock_checkbox.pack(anchor=tk.W)
+        
+        auto_lock_note = tk.Label(
+            auto_lock_frame,
+            text="Lock screen (Win+L) if user activity detected",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        auto_lock_note.pack(anchor=tk.W)
+        
+        # Monitoring start time input
+        auto_lock_time_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        auto_lock_time_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        auto_lock_time_label = tk.Label(
+            auto_lock_time_frame,
+            text="⏱️ Monitoring Start (mm:ss):",
             font=Fonts.BODY,
             bg=Colors.SURFACE,
             fg=Colors.TEXT_DIM
         )
-        auto_click_min_label.pack(anchor=tk.W)
+        auto_lock_time_label.pack(anchor=tk.W)
         
-        self.auto_click_min_var = tk.StringVar(value=self._format_time(self.DEFAULT_AUTO_CLICK_MIN_SEC))
-        self.auto_click_min_entry = tk.Entry(
-            auto_click_min_frame,
-            textvariable=self.auto_click_min_var,
+        self.auto_lock_monitor_var = tk.StringVar(value=self._format_time(self.DEFAULT_AUTO_LOCK_MONITOR_SEC))
+        self.auto_lock_monitor_entry = tk.Entry(
+            auto_lock_time_frame,
+            textvariable=self.auto_lock_monitor_var,
             font=Fonts.BODY,
             width=8,
             bg=Colors.BACKGROUND,
             fg=Colors.TEXT,
             insertbackground=Colors.TEXT,
-            relief=tk.FLAT
+            relief=tk.FLAT,
+            state=tk.DISABLED  # Disabled by default until checkbox is checked
         )
-        self.auto_click_min_entry.pack(anchor=tk.W, pady=(3, 0))
+        self.auto_lock_monitor_entry.pack(anchor=tk.W, pady=(3, 0))
         
-        auto_click_min_note = tk.Label(
-            auto_click_min_frame,
-            text="Min interval between auto-clicks",
+        auto_lock_time_note = tk.Label(
+            auto_lock_time_frame,
+            text="Time before monitoring begins",
             font=("Segoe UI", 8),
             bg=Colors.SURFACE,
             fg=Colors.TEXT_DIM
         )
-        auto_click_min_note.pack(anchor=tk.W)
-        
-        auto_click_max_frame = tk.Frame(row4, bg=Colors.SURFACE)
-        auto_click_max_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        auto_click_max_label = tk.Label(
-            auto_click_max_frame,
-            text="🖱️ Auto-Click Max (mm:ss):",
-            font=Fonts.BODY,
-            bg=Colors.SURFACE,
-            fg=Colors.TEXT_DIM
-        )
-        auto_click_max_label.pack(anchor=tk.W)
-        
-        self.auto_click_max_var = tk.StringVar(value=self._format_time(self.DEFAULT_AUTO_CLICK_MAX_SEC))
-        self.auto_click_max_entry = tk.Entry(
-            auto_click_max_frame,
-            textvariable=self.auto_click_max_var,
-            font=Fonts.BODY,
-            width=8,
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            insertbackground=Colors.TEXT,
-            relief=tk.FLAT
-        )
-        self.auto_click_max_entry.pack(anchor=tk.W, pady=(3, 0))
-        
-        auto_click_max_note = tk.Label(
-            auto_click_max_frame,
-            text="Max interval (STRICT: ≤ 4 min)",
-            font=("Segoe UI", 8),
-            bg=Colors.SURFACE,
-            fg=Colors.TEXT_DIM
-        )
-        auto_click_max_note.pack(anchor=tk.W)
+        auto_lock_time_note.pack(anchor=tk.W)
         
         # Fifth row: Global shortcut + Force logout
         row5 = tk.Frame(settings_frame, bg=Colors.SURFACE)
@@ -1448,11 +1450,16 @@ class AutoWebApp:
         self.app_switch_entry.configure(state=state)
         self.total_runtime_entry.configure(state=state)
         self.repeat_checkbox.configure(state=state)
-        self.auto_click_min_entry.configure(state=state)
-        self.auto_click_max_entry.configure(state=state)
         self.shortcut_entry.configure(state=state)
         self.force_logout_checkbox.configure(state=state)
         self.simple_logout_checkbox.configure(state=state)
+        self.auto_lock_checkbox.configure(state=state)
+        # Only enable auto_lock_monitor_entry if auto_lock is checked
+        if enabled and self.auto_lock_var.get():
+            self.auto_lock_monitor_entry.configure(state=tk.NORMAL)
+        else:
+            self.auto_lock_monitor_entry.configure(state=tk.DISABLED if not enabled else 
+                                                   (tk.NORMAL if self.auto_lock_var.get() else tk.DISABLED))
 
     def _reset_defaults(self) -> None:
         """Reset timing inputs to default values."""
@@ -1463,11 +1470,12 @@ class AutoWebApp:
         self.app_switch_var.set(self._format_time(self.DEFAULT_APP_SWITCH_SEC))
         self.total_runtime_var.set(self._format_time(self.DEFAULT_RUNTIME_SEC))
         self.repeat_screens_var.set(True)
-        self.auto_click_min_var.set(self._format_time(self.DEFAULT_AUTO_CLICK_MIN_SEC))
-        self.auto_click_max_var.set(self._format_time(self.DEFAULT_AUTO_CLICK_MAX_SEC))
         self.shortcut_var.set("Ctrl+Shift+P")
         self.force_logout_var.set(False)
         self.simple_logout_var.set(False)
+        self.auto_lock_var.set(False)
+        self.auto_lock_monitor_var.set(self._format_time(self.DEFAULT_AUTO_LOCK_MONITOR_SEC))
+        self._on_auto_lock_toggle()  # Update entry state
     
     def _on_stop(self) -> None:
         """Handle stop action."""
@@ -1533,6 +1541,121 @@ class AutoWebApp:
             
         self.root.mainloop()
     
+    def _validate_time_input(self, value: str, field_name: str, min_seconds: int = 1, max_seconds: int = 86400) -> Optional[str]:
+        """
+        Validate a time input value.
+        
+        Args:
+            value: The input value string
+            field_name: Name of the field for error messages
+            min_seconds: Minimum allowed value in seconds
+            max_seconds: Maximum allowed value in seconds
+        
+        Returns:
+            Error message if invalid, None if valid
+        """
+        text = value.strip()
+        if not text:
+            return f"{field_name}: Cannot be empty"
+        
+        try:
+            if ":" in text:
+                parts = text.split(":")
+                if len(parts) != 2:
+                    return f"{field_name}: Invalid format. Use mm:ss (e.g., 05:00)"
+                minutes_str, seconds_str = parts
+                if not minutes_str.isdigit() or not seconds_str.isdigit():
+                    return f"{field_name}: Minutes and seconds must be numbers"
+                minutes = int(minutes_str)
+                seconds = int(seconds_str)
+                if seconds >= 60:
+                    return f"{field_name}: Seconds must be 0-59"
+                total_seconds = (minutes * 60) + seconds
+            else:
+                # Try parsing as a number
+                try:
+                    number = float(text)
+                except ValueError:
+                    return f"{field_name}: Must be a valid number or mm:ss format"
+                if number < 0:
+                    return f"{field_name}: Cannot be negative"
+                total_seconds = int(round(number * 60))  # Assume minutes
+            
+            if total_seconds < min_seconds:
+                return f"{field_name}: Must be at least {self._format_time(min_seconds)}"
+            if total_seconds > max_seconds:
+                return f"{field_name}: Cannot exceed {self._format_time(max_seconds)}"
+            
+            return None  # Valid
+        except Exception as e:
+            return f"{field_name}: Invalid value - {str(e)}"
+    
+    def _validate_inputs(self) -> list:
+        """
+        Validate all timing inputs.
+        
+        Returns:
+            List of error messages (empty if all valid)
+        """
+        errors = []
+        
+        # Validate Active Time (min/max)
+        error = self._validate_time_input(self.active_min_var.get(), "Active Min", min_seconds=10, max_seconds=3600)
+        if error:
+            errors.append(error)
+        error = self._validate_time_input(self.active_max_var.get(), "Active Max", min_seconds=10, max_seconds=3600)
+        if error:
+            errors.append(error)
+        
+        # Validate Pause Time (min/max)
+        error = self._validate_time_input(self.idle_min_var.get(), "Pause Min", min_seconds=0, max_seconds=3600)
+        if error:
+            errors.append(error)
+        error = self._validate_time_input(self.idle_max_var.get(), "Pause Max", min_seconds=0, max_seconds=3600)
+        if error:
+            errors.append(error)
+        
+        # Validate App Switch interval
+        error = self._validate_time_input(self.app_switch_var.get(), "App Switch", min_seconds=30, max_seconds=3600)
+        if error:
+            errors.append(error)
+        
+        # Validate Total Runtime
+        error = self._validate_time_input(self.total_runtime_var.get(), "Total Runtime", min_seconds=60, max_seconds=86400)
+        if error:
+            errors.append(error)
+        
+        # Validate Auto Lock Monitor Time (only if enabled)
+        if self.auto_lock_var.get():
+            error = self._validate_time_input(self.auto_lock_monitor_var.get(), "Auto Lock Monitor", min_seconds=60, max_seconds=3600)
+            if error:
+                errors.append(error)
+        
+        # Cross-validation: Active Max must be >= Active Min
+        if not errors:
+            try:
+                active_min = self._parse_time_quick(self.active_min_var.get())
+                active_max = self._parse_time_quick(self.active_max_var.get())
+                if active_max < active_min:
+                    errors.append("Active Max must be greater than or equal to Active Min")
+                
+                idle_min = self._parse_time_quick(self.idle_min_var.get())
+                idle_max = self._parse_time_quick(self.idle_max_var.get())
+                if idle_max < idle_min:
+                    errors.append("Pause Max must be greater than or equal to Pause Min")
+            except:
+                pass  # Already handled by individual validations
+        
+        return errors
+    
+    def _parse_time_quick(self, value: str) -> int:
+        """Quick parse of time value to seconds (for validation)."""
+        text = value.strip()
+        if ":" in text:
+            parts = text.split(":")
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(round(float(text) * 60))
+    
     def _check_shutdown_events(self):
         """Check for system shutdown events and handle them gracefully."""
         if self.protection and self.protection.should_shutdown:
@@ -1552,6 +1675,13 @@ class AutoWebApp:
     
     def _on_submit(self) -> None:
         """Handle SUBMIT button click - show confirmation dialog."""
+        # Validate inputs first
+        validation_errors = self._validate_inputs()
+        if validation_errors:
+            error_msg = "\\n".join(validation_errors)
+            messagebox.showerror("Invalid Input", f"Please fix the following errors:\\n\\n{error_msg}")
+            return
+        
         # Get settings from inputs
         def _parse_time_to_seconds(value: str, default_seconds: int, assume_minutes: bool = True) -> int:
             try:
@@ -1619,23 +1749,14 @@ class AutoWebApp:
         app_switch_display = self._format_time(app_switch)
         total_runtime_display = self._format_time(total_runtime)
         
-        # Create settings dict
-        # Parse auto-click settings
-        auto_click_min = _parse_time_to_seconds(
-            self.auto_click_min_var.get(),
-            self.DEFAULT_AUTO_CLICK_MIN_SEC,
+        # Parse auto lock settings
+        auto_lock_enabled = self.auto_lock_var.get()
+        auto_lock_monitor_time = _parse_time_to_seconds(
+            self.auto_lock_monitor_var.get(),
+            self.DEFAULT_AUTO_LOCK_MONITOR_SEC,
             assume_minutes=True
         )
-        auto_click_max = _parse_time_to_seconds(
-            self.auto_click_max_var.get(),
-            self.DEFAULT_AUTO_CLICK_MAX_SEC,
-            assume_minutes=True
-        )
-        # Enforce strict 4-minute maximum (240 seconds)
-        auto_click_max = min(auto_click_max, 240)
-        auto_click_min = min(auto_click_min, auto_click_max)
-        auto_click_min_display = self._format_time(auto_click_min)
-        auto_click_max_display = self._format_time(auto_click_max)
+        auto_lock_monitor_display = self._format_time(auto_lock_monitor_time)
         
         settings = {
             'active_min': active_min_display,
@@ -1645,10 +1766,10 @@ class AutoWebApp:
             'app_switch': app_switch_display,
             'total_runtime': total_runtime_display,
             'repeat_screens': "Yes" if self.repeat_screens_var.get() else "No",
-            'auto_click': f"{auto_click_min_display}-{auto_click_max_display}",
             'force_logout': "ON \u26a0\ufe0f" if self.force_logout_var.get() else "OFF",
             'simple_logout': "ON 🚪" if self.simple_logout_var.get() else "OFF",
-            'shortcut': self.shortcut_var.get().strip()
+            'shortcut': self.shortcut_var.get().strip(),
+            'auto_lock': f"ON (after {auto_lock_monitor_display})" if auto_lock_enabled else "OFF"
         }
         
         # Show confirmation dialog (no shortcuts shown)
@@ -1662,7 +1783,6 @@ class AutoWebApp:
             f"Active {active_min_display}-{active_max_display}, "
             f"Pause {idle_min_display}-{idle_max_display}, "
             f"App Switch {app_switch_display}, "
-            f"Auto-Click {auto_click_min_display}-{auto_click_max_display}, "
             f"Total {total_runtime_display}, "
             f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
         )
@@ -1688,8 +1808,10 @@ class AutoWebApp:
         self.scheduler.config.app_switch_interval = app_switch
         self.scheduler.config.total_runtime = total_runtime
         self.scheduler.config.repeat_screens = self.repeat_screens_var.get()
-        self.scheduler.config.auto_click_min = auto_click_min
-        self.scheduler.config.auto_click_max = auto_click_max
+        
+        # Configure auto lock feature
+        self.scheduler.config.auto_lock_enabled = auto_lock_enabled
+        self.scheduler.config.auto_lock_monitor_time = auto_lock_monitor_time
         
         # Disable submit button
         self.submit_btn.configure(state=tk.DISABLED)
@@ -1702,7 +1824,6 @@ class AutoWebApp:
                 f"Active {active_min_display}-{active_max_display}, "
                 f"Pause {idle_min_display}-{idle_max_display}, "
                 f"App Switch {app_switch_display}, "
-                f"Auto-Click {auto_click_min_display}-{auto_click_max_display}, "
                 f"Total {total_runtime_display}"
             )
             self._log_message("PAUSES on clicks/keyboard only")
@@ -1710,6 +1831,8 @@ class AutoWebApp:
                 self._log_message("\u26a0\ufe0f FORCE LOGOUT ON USER ACTIVITY ENABLED")
             elif self.simple_logout_var.get():
                 self._log_message("🚪 SIMPLE LOGOUT (Windows system) ON USER ACTIVITY ENABLED")
+            if auto_lock_enabled:
+                self._log_message(f"🔐 AUTO LOCK ENABLED - Monitoring starts after {auto_lock_monitor_display}")
             
             # Make window INVISIBLE
             self.root.withdraw()  # Hide window completely
