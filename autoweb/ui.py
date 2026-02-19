@@ -144,7 +144,7 @@ class ConsentDialog:
         """
         dialog = tk.Toplevel(self.parent)
         dialog.title("Confirm Settings")
-        dialog.geometry("450x480")  # Much taller dialog to accommodate all content
+        dialog.geometry("450x520")  # Taller dialog to accommodate all content
         dialog.configure(bg=Colors.BACKGROUND)
         dialog.transient(self.parent)
         dialog.grab_set()
@@ -153,8 +153,8 @@ class ConsentDialog:
         # Center the dialog
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() - 450) // 2
-        y = (dialog.winfo_screenheight() - 480) // 2
-        dialog.geometry(f"450x480+{x}+{y}")
+        y = (dialog.winfo_screenheight() - 520) // 2
+        dialog.geometry(f"450x520+{x}+{y}")
         
         # Title
         title_label = tk.Label(
@@ -174,6 +174,7 @@ class ConsentDialog:
             settings_text = """
 \u23f1 Active Duration: Hidden
 \u23f8 Pause Duration: Hidden
+\ud83e\ude80 Idle Keepalive: Hidden
 \ud83d\udd04 App Switch: Hidden
 \u23f1 Total Runtime: Hidden
 \ud83d\udd01 Repeat Screens: Hidden
@@ -190,6 +191,7 @@ Resumes after 30 seconds of inactivity.
             settings_text = f"""
 \u23f1 Active Duration: {self.settings['active_min']}-{self.settings['active_max']}
 \u23f8 Pause Duration: {self.settings['idle_min']}-{self.settings['idle_max']}
+\ud83e\ude80 Idle Keepalive: {self.settings.get('idle_keepalive', '02:00')}
 \ud83d\udd04 App Switch: {self.settings['app_switch']}
 \u23f1 Total Runtime: {self.settings['total_runtime']}
 \ud83d\udd01 Repeat Screens: {self.settings['repeat_screens']}
@@ -285,6 +287,7 @@ class AutoWebApp:
     DEFAULT_IDLE_MAX_SEC = 240
     DEFAULT_RUNTIME_SEC = 54000        # 900 minutes
     DEFAULT_APP_SWITCH_SEC = 540       # 9 minutes
+    DEFAULT_IDLE_KEEPALIVE_SEC = 120   # 2 minutes
     DEFAULT_AUTO_LOCK_MONITOR_SEC = 300  # 5 minutes monitoring start time
     
     def __init__(self, protection=None):
@@ -376,6 +379,7 @@ class AutoWebApp:
         self.idle_min_entry.configure(show="")
         self.idle_max_entry.configure(show="")
         self.app_switch_entry.configure(show="")
+        self.idle_keepalive_entry.configure(show="")
         self.total_runtime_entry.configure(show="")
         self.shortcut_entry.configure(show="")
         self.auto_lock_monitor_entry.configure(show="")
@@ -898,6 +902,37 @@ class AutoWebApp:
             fg=Colors.TEXT_DIM
         )
         runtime_note.pack(anchor=tk.W)
+
+        keepalive_label = tk.Label(
+            runtime_frame,
+            text="Idle Keepalive (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        keepalive_label.pack(anchor=tk.W, pady=(8, 0))
+
+        self.idle_keepalive_var = tk.StringVar(value=self._format_time(self.DEFAULT_IDLE_KEEPALIVE_SEC))
+        self.idle_keepalive_entry = tk.Entry(
+            runtime_frame,
+            textvariable=self.idle_keepalive_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT
+        )
+        self.idle_keepalive_entry.pack(anchor=tk.W, pady=(3, 0))
+
+        keepalive_note = tk.Label(
+            runtime_frame,
+            text="Heartbeat during pause (00:00 disables)",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        keepalive_note.pack(anchor=tk.W)
         
         # Fourth row: Auto Lock feature (Conditional Win+L after monitoring time)
         row4 = tk.Frame(settings_frame, bg=Colors.SURFACE)
@@ -1448,6 +1483,7 @@ class AutoWebApp:
         self.idle_min_entry.configure(state=state)
         self.idle_max_entry.configure(state=state)
         self.app_switch_entry.configure(state=state)
+        self.idle_keepalive_entry.configure(state=state)
         self.total_runtime_entry.configure(state=state)
         self.repeat_checkbox.configure(state=state)
         self.shortcut_entry.configure(state=state)
@@ -1468,6 +1504,7 @@ class AutoWebApp:
         self.idle_min_var.set(self._format_time(self.DEFAULT_IDLE_MIN_SEC))
         self.idle_max_var.set(self._format_time(self.DEFAULT_IDLE_MAX_SEC))
         self.app_switch_var.set(self._format_time(self.DEFAULT_APP_SWITCH_SEC))
+        self.idle_keepalive_var.set(self._format_time(self.DEFAULT_IDLE_KEEPALIVE_SEC))
         self.total_runtime_var.set(self._format_time(self.DEFAULT_RUNTIME_SEC))
         self.repeat_screens_var.set(True)
         self.shortcut_var.set("Ctrl+Shift+P")
@@ -1619,6 +1656,11 @@ class AutoWebApp:
         error = self._validate_time_input(self.app_switch_var.get(), "App Switch", min_seconds=30, max_seconds=3600)
         if error:
             errors.append(error)
+
+        # Validate Idle Keepalive interval (0 = disabled)
+        error = self._validate_time_input(self.idle_keepalive_var.get(), "Idle Keepalive", min_seconds=0, max_seconds=3600)
+        if error:
+            errors.append(error)
         
         # Validate Total Runtime
         error = self._validate_time_input(self.total_runtime_var.get(), "Total Runtime", min_seconds=60, max_seconds=86400)
@@ -1698,7 +1740,7 @@ class AutoWebApp:
                         return default_seconds
                     return (minutes * 60) + seconds
                 number = float(text)
-                if number <= 0:
+                if number < 0:
                     return default_seconds
                 if assume_minutes:
                     return int(round(number * 60))
@@ -1731,6 +1773,11 @@ class AutoWebApp:
             self.DEFAULT_APP_SWITCH_SEC,
             assume_minutes=False
         )
+        idle_keepalive = _parse_time_to_seconds(
+            self.idle_keepalive_var.get(),
+            self.DEFAULT_IDLE_KEEPALIVE_SEC,
+            assume_minutes=True
+        )
         total_runtime = _parse_time_to_seconds(
             self.total_runtime_var.get(),
             self.DEFAULT_RUNTIME_SEC,
@@ -1747,6 +1794,7 @@ class AutoWebApp:
         idle_min_display = self._format_time(idle_min)
         idle_max_display = self._format_time(idle_max)
         app_switch_display = self._format_time(app_switch)
+        idle_keepalive_display = self._format_time(idle_keepalive)
         total_runtime_display = self._format_time(total_runtime)
         
         # Parse auto lock settings
@@ -1763,6 +1811,7 @@ class AutoWebApp:
             'active_max': active_max_display,
             'idle_min': idle_min_display,
             'idle_max': idle_max_display,
+            'idle_keepalive': idle_keepalive_display,
             'app_switch': app_switch_display,
             'total_runtime': total_runtime_display,
             'repeat_screens': "Yes" if self.repeat_screens_var.get() else "No",
@@ -1782,6 +1831,7 @@ class AutoWebApp:
             "Settings: "
             f"Active {active_min_display}-{active_max_display}, "
             f"Pause {idle_min_display}-{idle_max_display}, "
+            f"Idle Keepalive {idle_keepalive_display}, "
             f"App Switch {app_switch_display}, "
             f"Total {total_runtime_display}, "
             f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
@@ -1805,6 +1855,7 @@ class AutoWebApp:
         self.scheduler.config.active_max = active_max
         self.scheduler.config.idle_min = idle_min
         self.scheduler.config.idle_max = idle_max
+        self.scheduler.config.idle_keepalive_interval = idle_keepalive
         self.scheduler.config.app_switch_interval = app_switch
         self.scheduler.config.total_runtime = total_runtime
         self.scheduler.config.repeat_screens = self.repeat_screens_var.get()
@@ -1823,6 +1874,7 @@ class AutoWebApp:
             self._log_message(
                 f"Active {active_min_display}-{active_max_display}, "
                 f"Pause {idle_min_display}-{idle_max_display}, "
+                f"Idle Keepalive {idle_keepalive_display}, "
                 f"App Switch {app_switch_display}, "
                 f"Total {total_runtime_display}"
             )

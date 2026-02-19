@@ -106,6 +106,7 @@ class SchedulerConfig:
         repeat_screens: Whether to allow repeating screen views within a cycle
         auto_lock_enabled: Whether to enable auto lock (Win+L) after monitoring time
         auto_lock_monitor_time: Seconds to wait before starting user activity monitoring for auto lock
+        idle_keepalive_interval: Seconds between keepalive input events during idle phase
     """
     active_min: int = 300           # 5 minutes
     active_max: int = 600           # 10 minutes
@@ -124,6 +125,7 @@ class SchedulerConfig:
     repeat_screens: bool = True
     auto_lock_enabled: bool = False    # Conditional auto lock feature
     auto_lock_monitor_time: int = 300  # 5 minutes before monitoring starts
+    idle_keepalive_interval: int = 120  # Keep MoniTask active during scheduler idle phase
 
 
 class AutomationScheduler:
@@ -1017,6 +1019,7 @@ class AutomationScheduler:
         )
         
         start_time = time.time()
+        last_keepalive_time = start_time
         
         while not self._stop_event.is_set():
             # Check runtime
@@ -1038,6 +1041,24 @@ class AutomationScheduler:
                 runtime_remaining=self._get_runtime_remaining(),
                 phase=AutomationPhase.IDLE
             )
+
+            # Keep MoniTask responsive during scheduler idle windows.
+            if self.config.idle_keepalive_interval > 0:
+                now = time.time()
+                if (now - last_keepalive_time) >= self.config.idle_keepalive_interval:
+                    self.idle_detector.suppress_activity()
+                    try:
+                        x, y = self.input_simulator.safe_click()
+                        self._update_state(last_action=f"Idle keepalive click at ({x}, {y})")
+                        logger.info(f"Idle keepalive click at ({x}, {y})")
+                    except Exception as e:
+                        logger.error(f"Idle keepalive failed: {e}")
+                    finally:
+                        self.idle_detector.restore_activity()
+                    last_keepalive_time = now
+
+            # MoniTask idle dialog can appear during scheduler idle phase.
+            self._handle_monitask_windows()
             
             # Sleep in small increments for responsive stopping
             time.sleep(0.5)
