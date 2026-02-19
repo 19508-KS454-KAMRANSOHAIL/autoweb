@@ -144,7 +144,7 @@ class ConsentDialog:
         """
         dialog = tk.Toplevel(self.parent)
         dialog.title("Confirm Settings")
-        dialog.geometry("450x520")  # Taller dialog to accommodate all content
+        dialog.geometry("450x560")  # Taller dialog to accommodate all content
         dialog.configure(bg=Colors.BACKGROUND)
         dialog.transient(self.parent)
         dialog.grab_set()
@@ -153,8 +153,8 @@ class ConsentDialog:
         # Center the dialog
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() - 450) // 2
-        y = (dialog.winfo_screenheight() - 520) // 2
-        dialog.geometry(f"450x520+{x}+{y}")
+        y = (dialog.winfo_screenheight() - 560) // 2
+        dialog.geometry(f"450x560+{x}+{y}")
         
         # Title
         title_label = tk.Label(
@@ -175,6 +175,7 @@ class ConsentDialog:
 \u23f1 Active Duration: Hidden
 \u23f8 Pause Duration: Hidden
 \ud83e\ude80 Idle Keepalive: Hidden
+\ud83d\udd01 Refresh: Hidden
 \ud83d\udd04 App Switch: Hidden
 \u23f1 Total Runtime: Hidden
 \ud83d\udd01 Repeat Screens: Hidden
@@ -192,6 +193,7 @@ Resumes after 30 seconds of inactivity.
 \u23f1 Active Duration: {self.settings['active_min']}-{self.settings['active_max']}
 \u23f8 Pause Duration: {self.settings['idle_min']}-{self.settings['idle_max']}
 \ud83e\ude80 Idle Keepalive: {self.settings.get('idle_keepalive', '02:00')}
+\ud83d\udd01 Refresh: {self.settings.get('refresh', 'OFF')}
 \ud83d\udd04 App Switch: {self.settings['app_switch']}
 \u23f1 Total Runtime: {self.settings['total_runtime']}
 \ud83d\udd01 Repeat Screens: {self.settings['repeat_screens']}
@@ -288,6 +290,7 @@ class AutoWebApp:
     DEFAULT_RUNTIME_SEC = 54000        # 900 minutes
     DEFAULT_APP_SWITCH_SEC = 540       # 9 minutes
     DEFAULT_IDLE_KEEPALIVE_SEC = 120   # 2 minutes
+    DEFAULT_REFRESH_INTERVAL_SEC = 240  # 4 minutes
     DEFAULT_AUTO_LOCK_MONITOR_SEC = 300  # 5 minutes monitoring start time
     
     def __init__(self, protection=None):
@@ -298,10 +301,16 @@ class AutoWebApp:
         # Create main window
         self.root = tk.Tk()
         self.root.title("AutoWeb - UI Automation Tool")
-        self.root.geometry("600x950")
         self.root.configure(bg=Colors.BACKGROUND)
         self.root.resizable(True, True)
-        self.root.minsize(550, 800)
+        self.root.minsize(520, 600)
+
+        # Screen-aware window sizing for laptop/tablet/large displays
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        self._window_width = min(900, max(560, screen_w - 80))
+        self._window_height = min(980, max(620, screen_h - 100))
+        self.root.geometry(f"{self._window_width}x{self._window_height}")
         
         # Keep window always on top
         self.root.attributes('-topmost', True)
@@ -352,9 +361,9 @@ class AutoWebApp:
         
         # Center window on screen
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - 600) // 2
-        y = (self.root.winfo_screenheight() - 950) // 2
-        self.root.geometry(f"600x950+{x}+{y}")
+        x = (self.root.winfo_screenwidth() - self._window_width) // 2
+        y = (self.root.winfo_screenheight() - self._window_height) // 2
+        self.root.geometry(f"{self._window_width}x{self._window_height}+{x}+{y}")
 
         # Block screen capture for this window (Windows 10+)
         self._set_window_capture_protection()
@@ -380,6 +389,7 @@ class AutoWebApp:
         self.idle_max_entry.configure(show="")
         self.app_switch_entry.configure(show="")
         self.idle_keepalive_entry.configure(show="")
+        self.refresh_interval_entry.configure(show="")
         self.total_runtime_entry.configure(show="")
         self.shortcut_entry.configure(show="")
         self.auto_lock_monitor_entry.configure(show="")
@@ -521,6 +531,13 @@ class AutoWebApp:
             self.auto_lock_monitor_entry.configure(state=tk.NORMAL)
         else:
             self.auto_lock_monitor_entry.configure(state=tk.DISABLED)
+
+    def _on_refresh_toggle(self):
+        """Handle refresh checkbox toggle - enable/disable refresh interval input."""
+        if self.refresh_var.get():
+            self.refresh_interval_entry.configure(state=tk.NORMAL)
+        else:
+            self.refresh_interval_entry.configure(state=tk.DISABLED)
     
     def _on_user_activity_external(self, activity_type):
         """Handle user activity detection (for logout options)."""
@@ -569,8 +586,39 @@ class AutoWebApp:
     
     def _create_widgets(self) -> None:
         """Create all UI widgets."""
-        # Main container
-        main_frame = tk.Frame(self.root, bg=Colors.BACKGROUND)
+        # Scrollable main container for smaller screens
+        outer = tk.Frame(self.root, bg=Colors.BACKGROUND)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        self._main_canvas = tk.Canvas(
+            outer,
+            bg=Colors.BACKGROUND,
+            highlightthickness=0,
+            bd=0
+        )
+        v_scroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=self._main_canvas.yview)
+        self._main_canvas.configure(yscrollcommand=v_scroll.set)
+
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._scroll_content = tk.Frame(self._main_canvas, bg=Colors.BACKGROUND)
+        self._scroll_window_id = self._main_canvas.create_window(
+            (0, 0), window=self._scroll_content, anchor="nw"
+        )
+
+        def _on_content_configure(_event):
+            self._main_canvas.configure(scrollregion=self._main_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self._main_canvas.itemconfigure(self._scroll_window_id, width=event.width)
+
+        self._scroll_content.bind("<Configure>", _on_content_configure)
+        self._main_canvas.bind("<Configure>", _on_canvas_configure)
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # Main content frame inside scroll container
+        main_frame = tk.Frame(self._scroll_content, bg=Colors.BACKGROUND)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
         # Header
@@ -593,6 +641,11 @@ class AutoWebApp:
         
         # Activity log (smaller)
         self._create_activity_log(main_frame)
+
+    def _on_mousewheel(self, event):
+        """Enable mouse wheel scrolling for the full form."""
+        if hasattr(self, "_main_canvas"):
+            self._main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
     
     def _create_header(self, parent: tk.Frame) -> None:
         """Create the header section."""
@@ -933,13 +986,80 @@ class AutoWebApp:
             fg=Colors.TEXT_DIM
         )
         keepalive_note.pack(anchor=tk.W)
-        
-        # Fourth row: Auto Lock feature (Conditional Win+L after monitoring time)
+
+        # Fourth row: Refresh feature (optional periodic F5)
         row4 = tk.Frame(settings_frame, bg=Colors.SURFACE)
         row4.pack(fill=tk.X, pady=(0, 10))
+
+        refresh_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        refresh_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        self.refresh_var = tk.BooleanVar(value=False)
+        self.refresh_checkbox = tk.Checkbutton(
+            refresh_frame,
+            text="Refresh current app automatically",
+            variable=self.refresh_var,
+            command=self._on_refresh_toggle,
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT,
+            activebackground=Colors.SURFACE,
+            activeforeground=Colors.TEXT,
+            selectcolor=Colors.SURFACE,
+            justify=tk.LEFT
+        )
+        self.refresh_checkbox.pack(anchor=tk.W)
+
+        refresh_note = tk.Label(
+            refresh_frame,
+            text="Sends F5 to the focused app at the interval below",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        refresh_note.pack(anchor=tk.W)
+
+        refresh_time_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        refresh_time_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        refresh_time_label = tk.Label(
+            refresh_time_frame,
+            text="Refresh Interval (mm:ss):",
+            font=Fonts.BODY,
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        refresh_time_label.pack(anchor=tk.W)
+
+        self.refresh_interval_var = tk.StringVar(value=self._format_time(self.DEFAULT_REFRESH_INTERVAL_SEC))
+        self.refresh_interval_entry = tk.Entry(
+            refresh_time_frame,
+            textvariable=self.refresh_interval_var,
+            font=Fonts.BODY,
+            width=8,
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT,
+            insertbackground=Colors.TEXT,
+            relief=tk.FLAT,
+            state=tk.DISABLED
+        )
+        self.refresh_interval_entry.pack(anchor=tk.W, pady=(3, 0))
+
+        refresh_time_note = tk.Label(
+            refresh_time_frame,
+            text="Used only when Refresh is checked",
+            font=("Segoe UI", 8),
+            bg=Colors.SURFACE,
+            fg=Colors.TEXT_DIM
+        )
+        refresh_time_note.pack(anchor=tk.W)
+        
+        # Fifth row: Auto Lock feature (Conditional Win+L after monitoring time)
+        row5 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row5.pack(fill=tk.X, pady=(0, 10))
         
         # Auto Lock checkbox
-        auto_lock_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        auto_lock_frame = tk.Frame(row5, bg=Colors.SURFACE)
         auto_lock_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         self.auto_lock_var = tk.BooleanVar(value=False)
@@ -968,7 +1088,7 @@ class AutoWebApp:
         auto_lock_note.pack(anchor=tk.W)
         
         # Monitoring start time input
-        auto_lock_time_frame = tk.Frame(row4, bg=Colors.SURFACE)
+        auto_lock_time_frame = tk.Frame(row5, bg=Colors.SURFACE)
         auto_lock_time_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         auto_lock_time_label = tk.Label(
@@ -1003,11 +1123,11 @@ class AutoWebApp:
         )
         auto_lock_time_note.pack(anchor=tk.W)
         
-        # Fifth row: Global shortcut + Force logout
-        row5 = tk.Frame(settings_frame, bg=Colors.SURFACE)
-        row5.pack(fill=tk.X, pady=(0, 10))
+        # Sixth row: Global shortcut + Force logout
+        row6 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row6.pack(fill=tk.X, pady=(0, 10))
         
-        shortcut_config_frame = tk.Frame(row5, bg=Colors.SURFACE)
+        shortcut_config_frame = tk.Frame(row6, bg=Colors.SURFACE)
         shortcut_config_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         shortcut_config_label = tk.Label(
@@ -1042,7 +1162,7 @@ class AutoWebApp:
         shortcut_config_note.pack(anchor=tk.W)
         
         # Force logout checkbox
-        force_logout_frame = tk.Frame(row5, bg=Colors.SURFACE)
+        force_logout_frame = tk.Frame(row6, bg=Colors.SURFACE)
         force_logout_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         self.force_logout_checkbox = tk.Checkbutton(
@@ -1068,12 +1188,12 @@ class AutoWebApp:
         )
         force_logout_note.pack(anchor=tk.W)
         
-        # Add sixth row for simple logout
-        row6 = tk.Frame(settings_frame, bg=Colors.SURFACE)
-        row6.pack(fill=tk.X, pady=(10, 0))
+        # Add seventh row for simple logout
+        row7 = tk.Frame(settings_frame, bg=Colors.SURFACE)
+        row7.pack(fill=tk.X, pady=(10, 0))
         
         # Simple logout checkbox (app-only close)
-        simple_logout_frame = tk.Frame(row6, bg=Colors.SURFACE)
+        simple_logout_frame = tk.Frame(row7, bg=Colors.SURFACE)
         simple_logout_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         self.simple_logout_checkbox = tk.Checkbutton(
@@ -1484,12 +1604,17 @@ class AutoWebApp:
         self.idle_max_entry.configure(state=state)
         self.app_switch_entry.configure(state=state)
         self.idle_keepalive_entry.configure(state=state)
+        self.refresh_checkbox.configure(state=state)
         self.total_runtime_entry.configure(state=state)
         self.repeat_checkbox.configure(state=state)
         self.shortcut_entry.configure(state=state)
         self.force_logout_checkbox.configure(state=state)
         self.simple_logout_checkbox.configure(state=state)
         self.auto_lock_checkbox.configure(state=state)
+        if enabled and self.refresh_var.get():
+            self.refresh_interval_entry.configure(state=tk.NORMAL)
+        else:
+            self.refresh_interval_entry.configure(state=tk.DISABLED)
         # Only enable auto_lock_monitor_entry if auto_lock is checked
         if enabled and self.auto_lock_var.get():
             self.auto_lock_monitor_entry.configure(state=tk.NORMAL)
@@ -1505,6 +1630,8 @@ class AutoWebApp:
         self.idle_max_var.set(self._format_time(self.DEFAULT_IDLE_MAX_SEC))
         self.app_switch_var.set(self._format_time(self.DEFAULT_APP_SWITCH_SEC))
         self.idle_keepalive_var.set(self._format_time(self.DEFAULT_IDLE_KEEPALIVE_SEC))
+        self.refresh_var.set(False)
+        self.refresh_interval_var.set(self._format_time(self.DEFAULT_REFRESH_INTERVAL_SEC))
         self.total_runtime_var.set(self._format_time(self.DEFAULT_RUNTIME_SEC))
         self.repeat_screens_var.set(True)
         self.shortcut_var.set("Ctrl+Shift+P")
@@ -1512,6 +1639,7 @@ class AutoWebApp:
         self.simple_logout_var.set(False)
         self.auto_lock_var.set(False)
         self.auto_lock_monitor_var.set(self._format_time(self.DEFAULT_AUTO_LOCK_MONITOR_SEC))
+        self._on_refresh_toggle()
         self._on_auto_lock_toggle()  # Update entry state
     
     def _on_stop(self) -> None:
@@ -1540,6 +1668,11 @@ class AutoWebApp:
     
     def _on_close(self) -> None:
         """Handle window close event."""
+        try:
+            self.root.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
         # Stop automation if running
         if self.scheduler.is_running():
             self.scheduler.stop()
@@ -1661,6 +1794,12 @@ class AutoWebApp:
         error = self._validate_time_input(self.idle_keepalive_var.get(), "Idle Keepalive", min_seconds=0, max_seconds=3600)
         if error:
             errors.append(error)
+
+        # Validate Refresh interval (only when enabled)
+        if self.refresh_var.get():
+            error = self._validate_time_input(self.refresh_interval_var.get(), "Refresh Interval", min_seconds=30, max_seconds=3600)
+            if error:
+                errors.append(error)
         
         # Validate Total Runtime
         error = self._validate_time_input(self.total_runtime_var.get(), "Total Runtime", min_seconds=60, max_seconds=86400)
@@ -1778,6 +1917,11 @@ class AutoWebApp:
             self.DEFAULT_IDLE_KEEPALIVE_SEC,
             assume_minutes=True
         )
+        refresh_interval = _parse_time_to_seconds(
+            self.refresh_interval_var.get(),
+            self.DEFAULT_REFRESH_INTERVAL_SEC,
+            assume_minutes=True
+        )
         total_runtime = _parse_time_to_seconds(
             self.total_runtime_var.get(),
             self.DEFAULT_RUNTIME_SEC,
@@ -1795,7 +1939,9 @@ class AutoWebApp:
         idle_max_display = self._format_time(idle_max)
         app_switch_display = self._format_time(app_switch)
         idle_keepalive_display = self._format_time(idle_keepalive)
+        refresh_interval_display = self._format_time(refresh_interval)
         total_runtime_display = self._format_time(total_runtime)
+        refresh_enabled = self.refresh_var.get()
         
         # Parse auto lock settings
         auto_lock_enabled = self.auto_lock_var.get()
@@ -1812,6 +1958,7 @@ class AutoWebApp:
             'idle_min': idle_min_display,
             'idle_max': idle_max_display,
             'idle_keepalive': idle_keepalive_display,
+            'refresh': f"ON ({refresh_interval_display})" if refresh_enabled else "OFF",
             'app_switch': app_switch_display,
             'total_runtime': total_runtime_display,
             'repeat_screens': "Yes" if self.repeat_screens_var.get() else "No",
@@ -1832,6 +1979,8 @@ class AutoWebApp:
             f"Active {active_min_display}-{active_max_display}, "
             f"Pause {idle_min_display}-{idle_max_display}, "
             f"Idle Keepalive {idle_keepalive_display}, "
+            f"Refresh {'ON' if refresh_enabled else 'OFF'}"
+            f"{f' ({refresh_interval_display})' if refresh_enabled else ''}, "
             f"App Switch {app_switch_display}, "
             f"Total {total_runtime_display}, "
             f"Repeat Screens {'Yes' if self.repeat_screens_var.get() else 'No'}"
@@ -1856,6 +2005,8 @@ class AutoWebApp:
         self.scheduler.config.idle_min = idle_min
         self.scheduler.config.idle_max = idle_max
         self.scheduler.config.idle_keepalive_interval = idle_keepalive
+        self.scheduler.config.refresh_enabled = refresh_enabled
+        self.scheduler.config.refresh_interval = refresh_interval
         self.scheduler.config.app_switch_interval = app_switch
         self.scheduler.config.total_runtime = total_runtime
         self.scheduler.config.repeat_screens = self.repeat_screens_var.get()
@@ -1875,6 +2026,8 @@ class AutoWebApp:
                 f"Active {active_min_display}-{active_max_display}, "
                 f"Pause {idle_min_display}-{idle_max_display}, "
                 f"Idle Keepalive {idle_keepalive_display}, "
+                f"Refresh {'ON' if refresh_enabled else 'OFF'}"
+                f"{f' ({refresh_interval_display})' if refresh_enabled else ''}, "
                 f"App Switch {app_switch_display}, "
                 f"Total {total_runtime_display}"
             )

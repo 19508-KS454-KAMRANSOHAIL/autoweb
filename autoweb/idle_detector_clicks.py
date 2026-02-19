@@ -17,7 +17,7 @@ import time
 import logging
 from typing import Callable, Optional
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum, auto 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

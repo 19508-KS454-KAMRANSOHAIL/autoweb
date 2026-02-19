@@ -97,6 +97,7 @@ class VirtualKey(IntEnum):
     VK_LWIN = 0x5B  # Left Windows key
     VK_RWIN = 0x5C  # Right Windows key
     VK_F12 = 0x7B   # F12 key
+    VK_F5 = 0x74    # F5 key (refresh in browsers/editors)
 
 
 # Structure definitions for SendInput
@@ -359,7 +360,7 @@ class InputSimulator:
         logger.info(f"Random mouse movement to safe zone ({x}, {y})")
         return (x, y)
     
-    def safe_click(self) -> Tuple[int, int]:
+    def safe_click(self, current_app: Optional[str] = None) -> Tuple[int, int]:
         """
         Perform a SAFE click that won't affect code, content, or UI elements.
         
@@ -378,23 +379,30 @@ class InputSimulator:
         Returns:
             Tuple of (x, y) where the safe click was performed
         """
-        # Calculate safe zones that have ZERO functional impact
-        # Avoid: left 60px (sidebar icons), right 60px (chat panels), bottom 60px (taskbar)
-        # Focus on: title bar center area only
-        
-        safe_zones = [
-            # Title bar center area ONLY - most neutral zone
-            # Avoid close/minimize/maximize buttons (right side of title bar)
-            # Avoid VS Code menu (left side of title bar)
-            (random.randint(200, self.screen_width - 200), random.randint(10, 30)),
-            (random.randint(250, self.screen_width - 250), random.randint(8, 28)),
-            (random.randint(300, self.screen_width - 300), random.randint(12, 32)),
-            # Very center of screen - typically safe in most apps
-            (self.screen_width // 2 + random.randint(-100, 100), self.screen_height // 2 + random.randint(-50, 50)),
-        ]
-        
-        # Choose a random safe zone
-        x, y = random.choice(safe_zones)
+        app_name = (current_app or "").lower()
+        is_vscode = (
+            "visual studio code" in app_name or
+            "vs code" in app_name or
+            app_name.endswith(" - code")
+        )
+
+        # Strict neutral zone: title-bar center only.
+        # This avoids left activity icons, right-side action icons, and editor content.
+        x_min = max(180, int(self.screen_width * 0.35))
+        x_max = min(self.screen_width - 180, int(self.screen_width * 0.65))
+        if x_max <= x_min:
+            center = self.screen_width // 2
+            x_min = max(120, center - 40)
+            x_max = min(self.screen_width - 120, center + 40)
+
+        if is_vscode:
+            # Tighter Y-range for VS Code to avoid tab strip/editor/sidebar interactions.
+            y_min, y_max = 10, 22
+        else:
+            y_min, y_max = 10, 28
+
+        x = random.randint(x_min, x_max)
+        y = random.randint(y_min, y_max)
         
         # Clamp to safe bounds - avoid dangerous zones
         # Left: avoid sidebar icons (0-60px)
@@ -410,7 +418,7 @@ class InputSimulator:
         
         # Perform the click
         self.click("left")
-        logger.info(f"Safe click at neutral position ({x}, {y})")
+        logger.info(f"Safe click at neutral position ({x}, {y}), app='{current_app or 'unknown'}'")
         return (x, y)
     
     def safe_key_press(self) -> str:
@@ -775,6 +783,41 @@ class InputSimulator:
         self.key_up(VirtualKey.VK_LWIN)
         
         return True
+
+    def shortcut_ctrl_r(self) -> bool:
+        """
+        Execute Ctrl+R shortcut (common refresh in browsers and Electron apps).
+        """
+        logger.info("Executing Ctrl+R")
+
+        self.key_down(VirtualKey.VK_CONTROL)
+        time.sleep(0.05)
+
+        # 'R' key virtual code
+        self.key_press(0x52)
+        time.sleep(0.05)
+
+        self.key_up(VirtualKey.VK_CONTROL)
+        return True
+
+    def refresh_current_app(self, app_title: str = "") -> bool:
+        """
+        Trigger a generic refresh action for the foreground app.
+
+        Uses Ctrl+R for browsers/VS Code/Electron-style apps and F5 fallback.
+        """
+        title = (app_title or "").lower()
+        prefers_ctrl_r = any(x in title for x in [
+            "chrome", "firefox", "edge", "brave", "opera",
+            "visual studio code", "vscode", " - code"
+        ])
+
+        if prefers_ctrl_r:
+            logger.info("Executing refresh (Ctrl+R)")
+            return self.shortcut_ctrl_r()
+
+        logger.info("Executing refresh (F5)")
+        return self.key_press(VirtualKey.VK_F5)
     
     def type_text(self, text: str, delay: float = 0.05) -> bool:
         """

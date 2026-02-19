@@ -107,6 +107,8 @@ class SchedulerConfig:
         auto_lock_enabled: Whether to enable auto lock (Win+L) after monitoring time
         auto_lock_monitor_time: Seconds to wait before starting user activity monitoring for auto lock
         idle_keepalive_interval: Seconds between keepalive input events during idle phase
+        refresh_enabled: Whether to enable periodic refresh of foreground app
+        refresh_interval: Seconds between refresh actions (F5)
     """
     active_min: int = 300           # 5 minutes
     active_max: int = 600           # 10 minutes
@@ -126,6 +128,8 @@ class SchedulerConfig:
     auto_lock_enabled: bool = False    # Conditional auto lock feature
     auto_lock_monitor_time: int = 300  # 5 minutes before monitoring starts
     idle_keepalive_interval: int = 120  # Keep MoniTask active during scheduler idle phase
+    refresh_enabled: bool = False
+    refresh_interval: int = 240         # 4 minutes default
 
 
 class AutomationScheduler:
@@ -220,6 +224,7 @@ class AutomationScheduler:
         
         # App switch timing (separate from action interval)
         self._last_app_switch_time = 0.0
+        self._next_refresh_time = 0.0
         
         # Screen cycle tracking (unique screen switching)
         self._screen_seen = set()
@@ -660,6 +665,14 @@ class AutomationScheduler:
                 return f"Mouse moved to ({x}, {y})"
             
             elif action == ActionType.MOUSE_CLICK:
+                # Never click inside VS Code to avoid side icons/panels (Copilot, Chat, GitLens, etc).
+                # Use tab shuffle instead.
+                if is_code_editor:
+                    if supports_tabs:
+                        return self._switch_tab_in_app("VS Code")
+                    x, y = self.input_simulator.move_mouse_random()
+                    return f"VS Code click skipped - mouse moved to ({x}, {y})"
+
                 # SAFE CLICK: Only click on safe areas (title bar, edges)
                 # This prevents accidental clicks on code or content
                 # Random delay before click (0 to click_phase_max)
@@ -678,7 +691,7 @@ class AutomationScheduler:
                 if self._stop_event.is_set() or self._pause_event.is_set():
                     return "Click cancelled - user active"
                 
-                x, y = self.input_simulator.safe_click()
+                x, y = self.input_simulator.safe_click(current_app=current_app)
                 return f"Safe click at ({x}, {y}) after {click_delay:.1f}s delay"
             
             elif action == ActionType.TAB_SWITCH:
@@ -959,6 +972,13 @@ class AutomationScheduler:
             if not self._pause_event.is_set():
                 # First, check for MoniTask windows and handle them
                 self._handle_monitask_windows()
+
+                # Optional periodic refresh (F5)
+                refresh_desc = self._maybe_execute_refresh()
+                if refresh_desc:
+                    self._update_state(last_action=refresh_desc)
+                    logger.info(f"Action: {refresh_desc}")
+                    continue
                 
                 if should_switch_app:
                     # Time to switch apps!
@@ -1048,9 +1068,9 @@ class AutomationScheduler:
                 if (now - last_keepalive_time) >= self.config.idle_keepalive_interval:
                     self.idle_detector.suppress_activity()
                     try:
-                        x, y = self.input_simulator.safe_click()
-                        self._update_state(last_action=f"Idle keepalive click at ({x}, {y})")
-                        logger.info(f"Idle keepalive click at ({x}, {y})")
+                        key_desc = self.input_simulator.safe_key_press()
+                        self._update_state(last_action=f"Idle keepalive key: {key_desc}")
+                        logger.info(f"Idle keepalive key: {key_desc}")
                     except Exception as e:
                         logger.error(f"Idle keepalive failed: {e}")
                     finally:
@@ -1059,6 +1079,12 @@ class AutomationScheduler:
 
             # MoniTask idle dialog can appear during scheduler idle phase.
             self._handle_monitask_windows()
+
+            # Optional periodic refresh can run during idle phase.
+            refresh_desc = self._maybe_execute_refresh()
+            if refresh_desc:
+                self._update_state(last_action=refresh_desc)
+                logger.info(f"Action: {refresh_desc}")
             
             # Sleep in small increments for responsive stopping
             time.sleep(0.5)
@@ -1332,6 +1358,10 @@ class AutomationScheduler:
         self._paused_time = 0.0
         self._pause_start = None
         self._last_app_switch_time = time.time()  # Initialize app switch timer
+        if self.config.refresh_enabled and self.config.refresh_interval > 0:
+            self._next_refresh_time = time.time() + self.config.refresh_interval
+        else:
+            self._next_refresh_time = 0.0
         self._screen_seen.clear()
         self._record_current_screen()
         
@@ -1471,6 +1501,44 @@ class AutomationScheduler:
         except Exception as e:
             logger.error(f"Error handling MoniTask windows: {e}")
             return False
+
+    def _maybe_execute_refresh(self) -> Optional[str]:
+        """
+        Execute periodic refresh (F5) when enabled and interval elapsed.
+
+        Returns:
+            Action description if refresh was executed, otherwise None.
+        """
+        if not self.config.refresh_enabled:
+            return None
+        if self.config.refresh_interval <= 0:
+            return None
+        if self._pause_event.is_set() or self._stop_event.is_set():
+            return None
+
+        now = time.time()
+        if self._next_refresh_time <= 0.0:
+            self._next_refresh_time = now + self.config.refresh_interval
+            return None
+        if now < self._next_refresh_time:
+            return None
+
+        self.idle_detector.suppress_activity()
+        try:
+            current = self.window_manager.get_foreground_window()
+            app_name = current.title[:30] if current else "Unknown app"
+            full_title = current.title if current else ""
+            ok = self.input_simulator.refresh_current_app(app_title=full_title)
+            self._next_refresh_time = now + self.config.refresh_interval
+            if ok:
+                return f"Refreshed app: {app_name}..."
+            return f"Refresh attempted: {app_name}..."
+        except Exception as e:
+            logger.error(f"Refresh failed: {e}")
+            self._next_refresh_time = now + self.config.refresh_interval
+            return f"Refresh failed: {e}"
+        finally:
+            self.idle_detector.restore_activity()
     
     def is_running(self) -> bool:
         """Check if the scheduler is currently running."""
